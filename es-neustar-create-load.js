@@ -1,16 +1,25 @@
-//Neustar ipinfo index creation and loading of docs
-//Neustar metadata index creation script (one time script) should be run first before this
-//This script is idempotent
-//The csv file that is passed as input will have a header, that is skipped (even if you dont ask it to skip)
-//every line after that is processed unless you skip them
-//It first checks to see if there are any neustar indexes already present (max 2 indexes only at a time)
-//checks the neustar metadata index to know what the current index in use is
-//deletes the other (older) index and creates a new one and loads docs into it
-//This script also allows for pausing and resuming of docs loading into Neustar index
-//Once all the docs are loaded, it updates the metadata index with the new index
-//Monolith code then clears cache for metadata so new requests come to elasticSearch to know what the new ipinfo index is
-//Neustar index is of the form neustar.ipinfo.* (where * is the timestamp of when the index was created)
-//it is of type int (time form epoch)
+/*
+Neustar ipinfo index creation and loading of docs
+his script is idempotent.
+This script creates following indexes:
+- neustar.metadata which gives info currently used by monolith (if any), maxBlockSize for that index
+- neustar.scratch.space which stores intermediate info like last uploaded index and its maxBlockSize, paused index
+- a new index where Nuestar ip reputation data is loaded when the upload command is run
+
+The csv file that is passed as input must have a header (specifying the columns), that is skipped (even if you dont ask it to skip)
+every line after that is processed unless you skip them with the -s argument
+
+Options:
+Upload - uploads csv file to a new index (if there was not already an index that had a paused upload).
+         If there was a paused index, then uploading continues on that until it is complete
+DeleteAll - Delete all indexes that are not used by the monolith (got from neustar.metadata)
+DeleteOld - Delete all indexes that are older than what the monolith is using (got from neustar.metadata)
+Switch - Switch the index being used by the monolith to the latest fully loaded index (this is updating neustar.metadata)
+
+This script also allows for resuming of uploading docs loading into Neustar index (if it was paused because of a system crash or Ctrl + C)
+Neustar index is of the form neustar.ipinfo.* (where * is the timestamp of when the index was created)
+it is of type int (time form epoch)
+*/
 
 var parse = require('csv-parse');
 var http = require('http');
@@ -34,6 +43,8 @@ var scratchSpaceIndexName = "neustar.scratch.space";
 var metadataTypeName = "1";
 var objectType = "1";//name of mapping for Neustar index
 
+//all ip info indexes will have this prefix
+//the suffix is the tiestamp (int measured from epoch)
 const neustarIndexPrefix = "neustar.ipinfo."
 var recordCount = 0;
 var total = 0;
@@ -68,6 +79,7 @@ function optionCheck() {
 
 }
 
+//creates index if it doesn't exist
 function doesMetadataIndexExist() {
     var options = {
         host: program.host,
@@ -105,7 +117,7 @@ function createMetadataIndex() {
                 "properties": {
                     "currentIndex": {
                         "ignore_above": 10922,
-                        "type": "string" //measured from epoch
+                        "type": "string" //prefix + timestamp (measured from epoch)
                     },
                     "maxBlockSize": {
                         "type": "integer"
