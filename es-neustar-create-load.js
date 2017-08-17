@@ -33,14 +33,7 @@ var metadataIndexName = "neustar.metadata";
 var scratchSpaceIndexName = "neustar.scratch.space";
 var metadataTypeName = "1";
 var objectType = "1";//name of mapping for Neustar index
-var newLine = new Buffer("\n");
 
-var output = [];
-// Create the parser
-var parser = parse({delimiter: ',', columns: true, trim: true});
-
-var batchSize = program.batchsize !== null && program.batchsize > 0 ? program.batchsize : 1000;
-var byteCount = 0;
 const neustarIndexPrefix = "neustar.ipinfo."
 var recordCount = 0;
 var total = 0;
@@ -408,12 +401,12 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (updateSucceeded != '200') {
-                    console.log("Updating scratch space with new index name " + indexName + " failed with response code = " + updateSucceeded);
+                    console.log("Updating scratch space paused index with " + indexName + " failed with response code = " + updateSucceeded);
                     console.log(str);
                     console.log("Aborting...");
                     cb(false);
                 } else {
-                    console.log("Updating scratch space with new index name " + indexName + " succeeded.");
+                    console.log("Updating scratch space paused index with " + indexName + " succeeded.");
                     console.log(str);
                     cb(true);
                 }
@@ -772,7 +765,7 @@ function createIndexAndParseCsv(indexName) {
                 return;
             }
             console.log(str);
-            parseCsv(indexName);
+            parseCsv(indexName, program.skiplines);
         });
     }
 
@@ -923,10 +916,18 @@ function updateSkipLinesIfNeededAndParse(indexName) {
 }
 
 function parseCsv(indexName, origSkipLines) {
+    var newLine = new Buffer("\n");
+    var output = [];
+// Create the parser
+    var parser = parse({delimiter: ',', columns: true, trim: true});
+    var batchSize = program.batchsize !== null && program.batchsize > 0 ? program.batchsize : 1000;
+    var byteCount = 0;
+
     if (origSkipLines == null) {
         origSkipLines = 0;
     }
     var currentMaxBlockSize = 0;
+    var batchCount = 0;
     var indexCommand = new Buffer("{\"index\": {\"_index\": \"" + indexName + "\", \"_type\": \"" + objectType + "\" }}\n");
     // Use the writable stream api
     parser.on('readable', function() {
@@ -960,7 +961,7 @@ function parseCsv(indexName, origSkipLines) {
             byteCount += indexCommand.byteLength + output[output.length - 1].byteLength;
 
             if (recordCount >= batchSize) {
-                uploadBatches();
+                uploadBatches(false);
             }
         }
     });
@@ -992,20 +993,24 @@ function parseCsv(indexName, origSkipLines) {
         return (endIp - startIp);
     }
 
-    function uploadBatches() {
+    function uploadBatches(lastUpload) {
         if (output.length <= 0) {
+            if (lastUpload) {
+                console.log("Parser Finish calling uploadBatches() and there's nothing in output");
+                updateScratchSpaceWithLoadedIndex(indexName, currentMaxBlockSize);
+            }
             return;
         }
 
         output.push(newLine);
         byteCount += newLine.byteLength;
-        httpWrite(output, byteCount);
+        httpWrite(output, byteCount, lastUpload);
         output = [];
         byteCount = 0;
         recordCount = 0;
     }
 
-    function httpWrite(bufferArray, byteLength) {
+    function httpWrite(bufferArray, byteLength, lastUpload) {
         var post_options = {
             host: program.host,
             port: program.port,
@@ -1026,12 +1031,14 @@ function parseCsv(indexName, origSkipLines) {
                 if (rr.hasErrors) {
                     ++counterObject.httpBulkRetry;
                     setImmediate(function () {
-                        httpWrite(bufferArray, byteLength);
+                        httpWrite(bufferArray, byteLength, lastUpload);
                     });
                 } else {
                     displayStatus();
-                    //TODO: do this only aafter all batches are uploaded
-                    postUploadProcessing(indexName, currentMaxBlockSize);
+                    if (lastUpload) {
+                        console.log("Parser.finish finished uploading the last remnants of data to be parsed");
+                        updateScratchSpaceWithLoadedIndex(indexName, currentMaxBlockSize);
+                    }
                 }
             });
             rr.pipe(res);
@@ -1052,7 +1059,7 @@ function parseCsv(indexName, origSkipLines) {
 
     // When we are done, test that the parsed output matched what expected
     parser.on('finish', function(){
-        uploadBatches();
+        uploadBatches(true);
     });
 
     // Now that setup is done, write data to the stream
@@ -1122,46 +1129,6 @@ function parseCsv(indexName, origSkipLines) {
     }
 }
 
-
-function postUploadProcessing(indexName, maxBlockSize) {
-    var options = {
-        host: program.host,
-        port: program.port,
-        path: '/_cat/count/' + indexName + '?v&h=count&pretty',
-        method: 'GET'
-    };
-
-    var callback = function(response) {
-        var countSucceeded = response.statusCode;
-        var str = '';
-        //another chunk of data has been received, so append it to `str`
-        response.on('data', function (chunk) {
-            str += chunk;
-        });
-
-        //the whole response has been received, so we just print it out here
-        response.on('end', function () {
-            if (countSucceeded != '200') {
-                console.log("Counting docs after upload on " + indexName + " failed with response code = "
-                    + countSucceeded + ".Aborting...");
-                return;
-            } else {
-                //TODO: This is failing for some reason
-                //not giving the right count
-                var countArray = str.split(/\r\n|\r|\n/);
-                console.log(str);
-                var docCount = countArray[1];
-                console.log("Number of docs on index " + indexName + " after upload = " + docCount);
-
-                //update scratch space with new index name and maxBlockCount
-                updateScratchSpaceWithLoadedIndex(indexName, maxBlockSize);
-            }
-        });
-    }
-
-    http.request(options, callback).end();
-}
-
 function updateScratchSpaceWithLoadedIndex(newIndex, newMaxBlockSize) {
     //update the doc on metadata index with new index name and new maxBlockSize
     var options = {
@@ -1185,12 +1152,12 @@ function updateScratchSpaceWithLoadedIndex(newIndex, newMaxBlockSize) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (updateSucceeded != '200') {
-                console.log("Updating scratch space with new index name " + newIndex + " failed with response code = " + updateSucceeded);
+                console.log("Updating scratch space loaded index with " + newIndex + " failed with response code = " + updateSucceeded);
                 console.log(str);
                 console.log("Aborting...");
                 return;
             } else {
-                console.log("Updating scratch space with new index name " + newIndex + " succeeded.");
+                console.log("Updating scratch space loaded index with " + newIndex + " succeeded.");
                 console.log(str);
             }
         });
