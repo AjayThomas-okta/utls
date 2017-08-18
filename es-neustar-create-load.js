@@ -91,12 +91,20 @@ function doesMetadataIndexExist() {
     var callback = function(response) {
         var httpResponseCode = '404';
         httpResponseCode = response.statusCode;
+        var str = '';
+
+        //another chunk of data has been recieved, so append it to `str`
+        response.on('data', function (chunk) {
+            str += chunk;
+        });
+
         console.log("Metadata index exist response code=" + httpResponseCode);
         if (httpResponseCode == '200') {
             console.log("This means metadata index exists.");
             doOperationBasedOnOption();
         } else {
             console.log("This means metadata index does not exist. Creating it...");
+            console.log(str);
             createMetadataIndex();
         }
     };
@@ -157,7 +165,6 @@ function createMetadataIndex() {
                 console.log(str);
                 console.log("Aborting...");
             } else {
-                console.log(str);
                 doOperationBasedOnOption();
             }
         });
@@ -369,11 +376,11 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
             response.on('end', function () {
                 if (uploadSucceeded != '201') {
                     console.log("Creating new doc on scratch space with new index name " + indexName + " failed with response code = " + uploadSucceeded);
+                    console.log(str);
                     console.log("Aborting...");
                     cb(false);
                 } else {
                     console.log("Creating new doc on scratch space with new index name " + indexName + " succeeded.");
-                    console.log(str);
                     cb(true);
                 }
             });
