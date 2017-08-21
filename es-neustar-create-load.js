@@ -1,6 +1,6 @@
 /*
 Neustar ipinfo index creation and loading of docs
-his script is idempotent.
+this script is idempotent.
 This script creates following indexes:
 - neustar.metadata which gives info currently used by monolith (if any), maxBlockSize for that index
 - neustar.scratch.space which stores intermediate info like last uploaded index and its maxBlockSize, paused index
@@ -161,9 +161,8 @@ function createMetadataIndex() {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (response.statusCode != '200'){
-                console.log("Metadata index creation failed with error:");
-                console.log(str);
                 console.log("Aborting...");
+                throw new Error("Metadata index creation failed with error:" + str);
             } else {
                 doOperationBasedOnOption();
             }
@@ -190,6 +189,7 @@ function doOperationBasedOnOption() {
         switchIndex();
     } else {
         console.log("doOperationBasedOnOption aborting...");
+        throw new Error("doOperationBasedOnOption failed");
     }
 }
 
@@ -246,8 +246,10 @@ function deleteUnusedIndexes(deleteAll) {
                                 pausedIndex = pausedIndex.trim();
                             }
                         }
+                        var somethingDeleted = false;
                         for (i = 0; i < arrayOfIndexes.length; i++) {
                             if (arrayOfIndexes[i] != currentMonolithIndex) {
+                                somethingDeleted = true;
                                 deleteIndex(arrayOfIndexes[i]);
                                 if (arrayOfIndexes[i] === loadedIndex) {
                                     removeLoadedIndexFromScratchSpace();
@@ -257,14 +259,17 @@ function deleteUnusedIndexes(deleteAll) {
                                 }
                             } else {
                                 if (deleteAll) {
-                                    if (i == 0) {
-                                        console.log("Nothing to be deleted");
-                                    }
-                                    break;
-                                } else {
+                                    //delete indexes newer than what's used by monolith
+                                    //hence continue
+                                    //otherwise break out of for loop
                                     continue;
+                                } else {
+                                    break;
                                 }
                             }
+                        }
+                        if (!somethingDeleted) {
+                            console.log("Nothing to delete");
                         }
                     });
                 })
@@ -375,10 +380,9 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (uploadSucceeded != '201') {
-                    console.log("Creating new doc on scratch space with new index name " + indexName + " failed with response code = " + uploadSucceeded);
                     console.log(str);
                     console.log("Aborting...");
-                    cb(false);
+                    throw new Error("Creating new doc on scratch space with new index name " + indexName + " failed with response code = " + uploadSucceeded);
                 } else {
                     console.log("Creating new doc on scratch space with new index name " + indexName + " succeeded.");
                     cb(true);
@@ -398,7 +402,7 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
         req.end();
 
     } else {
-        //update the doc on metadata index with new index name and new maxBlockSize
+        //update the doc on scratch space paused index with new index name and new maxBlockSize
         var options = {
             host: program.host,
             port: program.port,
@@ -420,10 +424,9 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (updateSucceeded != '200') {
-                    console.log("Updating scratch space paused index with " + indexName + " failed with response code = " + updateSucceeded);
                     console.log(str);
                     console.log("Aborting...");
-                    cb(false);
+                    throw new Error("Updating scratch space paused index with " + indexName + " failed with response code = " + updateSucceeded);
                 } else {
                     console.log("Updating scratch space paused index with " + indexName + " succeeded.");
                     console.log(str);
@@ -558,8 +561,8 @@ function doesNeustarIpReputationIndexExist(neustarIpInfoIndexName, cb) {
             console.log("This means " + neustarIpInfoIndexName + " index exists.");
             cb(true);
         } else {
-            console.log("This means " + neustarIpInfoIndexName + " index does not exist. Aborting switching...");
-            cb(false);
+            console.log("Aborting switching...");
+            throw new Error("This means " + neustarIpInfoIndexName + " index does not exist.");
         }
     };
 
@@ -639,10 +642,9 @@ function createScratchSpaceIndex(cb) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (response.statusCode != '200'){
-                console.log("Metadata scratch space index creation failed with error:");
                 console.log(str);
                 console.log("Aborting...");
-                cb(false);
+                throw new Error("Metadata scratch space index creation failed with error:");
             } else {
                 console.log(str);
                 cb(true);
@@ -779,8 +781,8 @@ function createIndexAndParseCsv(indexName) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (response.statusCode != '200'){
-                console.log("Neustar index creation failed with error:" + str);
                 console.log("Neustar index creation failed. Aborting upload.");
+                throw new Error("Neustar index creation failed with error:" + str);
                 return;
             }
             console.log(str);
@@ -867,9 +869,8 @@ function createIndex(indexName, cb) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (response.statusCode != '200'){
-                console.log("Neustar index creation failed with error:" + str);
                 console.log("Neustar index creation failed. Aborting upload.");
-                cb(false);
+                throw new Error("Neustar index creation failed with error:" + str);
             } else {
                 console.log(str);
                 cb(true);
@@ -914,12 +915,9 @@ function updateSkipLinesIfNeededAndParse(indexName) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (countSucceeded != '200') {
-                console.log("Counting docs on " + indexName + " failed with response code = " + countSucceeded);
                 console.log("Aborting...");
-                return;
+                throw new Error("Counting docs on " + indexName + " failed with response code = " + countSucceeded);
             } else {
-                //TODO: This is failing for some reason
-                //not giving the right count
                 var countArray = str.split(/\r\n|\r|\n/);
                 var docCount = countArray[1];
                 console.log("Number of docs on index " + indexName + " = " + docCount);
@@ -1149,7 +1147,8 @@ function parseCsv(indexName, origSkipLines) {
 }
 
 function updateScratchSpaceWithLoadedIndex(newIndex, newMaxBlockSize) {
-    //update the doc on metadata index with new index name and new maxBlockSize
+    //update the doc on scratch space loaded Index with new index name and new maxBlockSize
+    //and nullify paused index
     var options = {
         host: program.host,
         port: program.port,
@@ -1171,10 +1170,9 @@ function updateScratchSpaceWithLoadedIndex(newIndex, newMaxBlockSize) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (updateSucceeded != '200') {
-                console.log("Updating scratch space loaded index with " + newIndex + " failed with response code = " + updateSucceeded);
                 console.log(str);
                 console.log("Aborting...");
-                return;
+                throw new Error("Updating scratch space loaded index with " + newIndex + " failed with response code = " + updateSucceeded);
             } else {
                 console.log("Updating scratch space loaded index with " + newIndex + " succeeded.");
                 console.log(str);
@@ -1206,7 +1204,7 @@ function removeLoadedIndexFromScratchSpace() {
 }
 
 function removeInfoFromScratchSpace(loaded, paused) {
-    //update the doc on metadata index with new index name and new maxBlockSize
+    //update the doc on metadata index and remove loaded index or paused index based on above args
     var options = {
         host: program.host,
         port: program.port,
@@ -1225,7 +1223,7 @@ function removeInfoFromScratchSpace(loaded, paused) {
             str += chunk;
         });
 
-        //the whole response has been recieved, so we just print it out here
+        //the whole response has been received, so we just print it out here
         response.on('end', function () {
             var logString = loaded ? "loadedIndex info" : "pausedIndex info";
             if (updateSucceeded != '200') {
@@ -1288,9 +1286,8 @@ function updateMetadataIndex(create, newIndex, newMaxBlockSize) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (uploadSucceeded != '201') {
-                    console.log("Creating new doc on metadata index with new index name " + newIndex + " failed with response code = " + uploadSucceeded);
                     console.log("Aborting...");
-                    return;
+                    throw new Error("Creating new doc on metadata index with new index name " + newIndex + " failed with response code = " + uploadSucceeded);
                 } else {
                     console.log("Creating new doc on metadata index with new index name " + newIndex + " succeeded.");
                     console.log(str);
@@ -1332,10 +1329,9 @@ function updateMetadataIndex(create, newIndex, newMaxBlockSize) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (updateSucceeded != '200') {
-                    console.log("Updating metadata index with new index name " + newIndex + " failed with response code = " + updateSucceeded);
                     console.log(str);
                     console.log("Aborting...");
-                    return;
+                    throw new Error("Updating metadata index with new index name " + newIndex + " failed with response code = " + updateSucceeded);
                 } else {
                     console.log("Updating metadata index with new index name " + newIndex + " succeeded.");
                     console.log(str);
