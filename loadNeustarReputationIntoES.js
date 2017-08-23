@@ -19,12 +19,17 @@ Switch - Switch the index being used by the monolith to the latest fully loaded 
 This script also allows for resuming of uploading docs loading into Neustar index (if it was paused because of a system crash or Ctrl + C)
 Neustar index is of the form neustar.ipinfo.* (where * is the timestamp of when the index was created)
 it is of type int (time form epoch)
+
+LogLevels
+Default is info
+Run with logLevel --verbose to see all logs
 */
 
 var parse = require('csv-parse');
 var http = require('http');
 var program = require('commander');
 var makeSource = require("stream-json");
+var winston = require('winston');
 program
     .version('0.0.1')
     .option('-s, --skiplines <n>', 'skip first n lines', parseInt)
@@ -35,6 +40,7 @@ program
     .option('--deleteOld', 'delete indexes older that whats used by monolith')
     .option('--upload', 'upload csv file')
     .option('--switch', 'start using new index for ip reputation')
+    .option('--logLevel [winstonLogLevel]', 'log level for console logging')
     .parse(process.argv);
 
 var indexRegExp = "neustar.ipinfo.*";
@@ -49,30 +55,47 @@ const neustarIndexPrefix = "neustar.ipinfo."
 var recordCount = 0;
 var total = 0;
 
+setLogLevel();
 optionCheck();
+
+function setLogLevel() {
+    if (program.logLevel == null) {
+        winston.level = 'info';
+    } else {
+        switch(program.logLevel.toString()) {
+            case 'debug':
+                winston.level = 'debug';
+                break;
+            case 'verbose':
+                winston.level = 'verbose';
+                break;
+            default:
+                winston.level = 'info';
+                break;
+        }
+    }
+    console.log("Logging level set to " + winston.level);
+}
 
 function optionCheck() {
     if (program.host == null || program.port == null) {
-        console.log("Elasticsearch host and port not set");
-        return;
+        throw new Error("Elasticsearch host and port not set");
     } else {
-        console.log("ElasticSearch host= " + program.host + " and port= " + program.port);
+        winston.log('verbose', "ElasticSearch host=" + program.host + " and port=" + program.port);
     }
     if (program.deleteAll == null && program.deleteOld == null && program.upload == null && program.switch == null) {
-        console.log("No option selected. Use --delete to clear old indexes, --upload to upload csv file " +
+        throw new Error("No option selected. Use --delete to clear old indexes, --upload to upload csv file " +
             "or --switch to enable the new index");
-        return;
     } else if (program.deleteOld != null && program.deleteAll == null && program.upload == null && program.switch == null) {
-        console.log("Delete old indexes option selected. Program will now delete old unused elasticsearch indexes for Neustar IP reputation.");
+        winston.log('verbose', "Delete old indexes option selected. Program will now delete old unused elasticsearch indexes for Neustar IP reputation.");
     } else if (program.deleteOld == null && program.deleteAll != null && program.upload == null && program.switch == null) {
-        console.log("Delete all indexes option selected. Program will now delete all unused elasticsearch indexes for Neustar IP reputation.");
+        winston.log('verbose', "Delete all indexes option selected. Program will now delete all unused elasticsearch indexes for Neustar IP reputation.");
     } else if (program.deleteOld == null && program.deleteAll == null && program.upload != null && program.switch == null) {
-        console.log("Upload option selected. Program will upload Neustar IP reputation to a new index.");
+        winston.log('verbose', "Upload option selected. Program will upload Neustar IP reputation to a new index.");
     } else if (program.deleteOld == null && program.deleteAll == null && program.upload == null && program.switch != null) {
-        console.log("Switch option selected. Program will switch current index in metadata index to use latest Neustar IP reputation index.");
+        winston.log('verbose', "Switch option selected. Program will switch current index in metadata index to use latest Neustar IP reputation index.");
     } else {
-        console.log("More than one option among delete, upload, switch not allowed.");
-        return;
+        throw new Error("More than one option among delete, upload, switch not allowed.");
     }
     //first check if metadata index exist
     doesMetadataIndexExist();
@@ -98,13 +121,13 @@ function doesMetadataIndexExist() {
             str += chunk;
         });
 
-        console.log("Metadata index exist response code=" + httpResponseCode);
+        winston.log('verbose', "Metadata index exist response code=" + httpResponseCode);
         if (httpResponseCode == '200') {
-            console.log("This means metadata index exists.");
+            winston.log('verbose', "This means metadata index exists.");
             doOperationBasedOnOption();
         } else {
-            console.log("This means metadata index does not exist. Creating it...");
-            console.log(str);
+            winston.log('verbose' , "This means metadata index does not exist. Creating it...");
+            winston.log('verbose' , str);
             createMetadataIndex();
         }
     };
@@ -150,7 +173,7 @@ function createMetadataIndex() {
     };
 
     var callback = function(response) {
-        console.log("Metadata index creation response code = " + response.statusCode);
+        winston.log('verbose' , "Metadata index creation response code = " + response.statusCode);
         var str = '';
 
         //another chunk of data has been recieved, so append it to `str`
@@ -160,8 +183,7 @@ function createMetadataIndex() {
 
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
-            if (response.statusCode != '200'){
-                console.log("Aborting...");
+            if (response.statusCode != '200') {
                 throw new Error("Metadata index creation failed with error:" + str);
             } else {
                 doOperationBasedOnOption();
@@ -173,7 +195,7 @@ function createMetadataIndex() {
     //This is the data we are posting, it needs to be a string or a buffer
     req.write(JSON.stringify(putData));
     req.end();
-    console.log("Creating metadata index " + metadataIndexName);
+    winston.log('info' , "Creating metadata index " + metadataIndexName);
 }
 
 function doOperationBasedOnOption() {
@@ -188,8 +210,7 @@ function doOperationBasedOnOption() {
     } else if (program.switch != null) {
         switchIndex();
     } else {
-        console.log("doOperationBasedOnOption aborting...");
-        throw new Error("doOperationBasedOnOption failed");
+        throw new Error("doOperationBasedOnOption failed. Aborting...");
     }
 }
 
@@ -212,10 +233,10 @@ function deleteIndex(indexToBeDeleted) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (indexDeleted != '200') {
-                console.log(indexToBeDeleted + "failed to be deleted with response code = " + indexDeleted);
-                console.log("Index deletion error is " + str);
+                winston.log('warn' , indexToBeDeleted + "failed to be deleted with response code = " + indexDeleted);
+                winston.log('warn' , "Index deletion error is " + str);
             } else {
-                console.log("Old index " + indexToBeDeleted + " deleted");
+                winston.log('info' , "Unused index " + indexToBeDeleted + " deleted");
             }
         });
     }
@@ -228,7 +249,7 @@ function deleteUnusedIndexes(deleteAll) {
         if (success === true) {
             getAllNeustarIndexes(function(arrayOfIndexes) {
                 if (arrayOfIndexes === null) {
-                    console.log("No indexes to delete.");
+                    winston.log('info' , "No indexes to delete.");
                     return;
                 }
                 var i;
@@ -269,19 +290,19 @@ function deleteUnusedIndexes(deleteAll) {
                             }
                         }
                         if (!somethingDeleted) {
-                            console.log("Nothing to delete");
+                            winston.log('info' , "Nothing to delete");
                         }
                     });
                 })
             });
         } else {
-            console.log("Scratch space creation failed");
+            throw new Error("Scratch space creation failed");
         }
     });
 }
 
 function getAllNeustarIndexes(cb) {
-    console.log("Getting all Neustar indexes");
+    winston.log('verbose' , "Getting all Neustar indexes");
     //get all indexes that match regexp 'indexName'
     var options = {
         host: program.host,
@@ -299,12 +320,12 @@ function getAllNeustarIndexes(cb) {
 
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
-            console.log("Neustar indexes on ES are: " + str);
+            winston.log('verbose' , "Neustar indexes on ES are: " + str);
 
             var arrayOfIndexes = str.split(/\r\n|\r|\n/);
             var indexToDelete = null;
             var indexCount = arrayOfIndexes.length - 2;
-            console.log("Number of indexes = " + indexCount);
+            winston.log('verbose' , "Number of indexes = " + indexCount);
             if (indexCount == 0) {
                 cb(null);
             } else {
@@ -332,7 +353,7 @@ function uploadCsv() {
                 var ipReputationIndexName;
                 if (scratchSpaceInfo == null || scratchSpaceInfo.pausedIndex == null) {
                     ipReputationIndexName = neustarIndexPrefix + Math.round(new Date().getTime() / 1000);
-                    console.log("Creating new index for csv upload = " + ipReputationIndexName);
+                    winston.log('info' , "Creating new index for csv upload = " + ipReputationIndexName);
                     createIndex(ipReputationIndexName, function (success) {
                         if (success === true) {
                             var createDoc = (scratchSpaceInfo == null) ? true : false;
@@ -346,7 +367,7 @@ function uploadCsv() {
                 } else {
                     pausedIndex = scratchSpaceInfo.pausedIndex.trim();
                     ipReputationIndexName = pausedIndex;
-                    console.log("Reusing Paused index in scratch space for csv upload = " + ipReputationIndexName);
+                    winston.log('info' , "Reusing paused index=" + ipReputationIndexName + " in scratch space for csv upload.");
                     //TODO: Gotta be careful, we're not uploading paused index with new csv file
                     updateSkipLinesIfNeededAndParse(ipReputationIndexName);
                 }
@@ -380,11 +401,10 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (uploadSucceeded != '201') {
-                    console.log(str);
-                    console.log("Aborting...");
+                    winston.log('error' , str);
                     throw new Error("Creating new doc on scratch space with new index name " + indexName + " failed with response code = " + uploadSucceeded);
                 } else {
-                    console.log("Creating new doc on scratch space with new index name " + indexName + " succeeded.");
+                    winston.log('verbose' , "Creating new doc on scratch space with new index name " + indexName + " succeeded.");
                     cb(true);
                 }
             });
@@ -424,12 +444,11 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (updateSucceeded != '200') {
-                    console.log(str);
-                    console.log("Aborting...");
+                    winston.log('error' , str);
                     throw new Error("Updating scratch space paused index with " + indexName + " failed with response code = " + updateSucceeded);
                 } else {
-                    console.log("Updating scratch space paused index with " + indexName + " succeeded.");
-                    console.log(str);
+                    winston.log('verbose' , "Updating scratch space paused index with " + indexName + " succeeded.");
+                    winston.log('verbose' , str);
                     cb(true);
                 }
             });
@@ -447,8 +466,6 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
         req.end();
 
     }
-
-
 }
 
 function switchIndex() {
@@ -465,13 +482,13 @@ function updateMetadataIndexWithLoadedIndex() {
     //one of the keys (currentIndex) is the name of the current neustar ip info
     getScratchSpaceInfo(function (scratchSpaceInfo) {
         if (scratchSpaceInfo == null) {
-            console.log("No documents on scratch space. Cannot update metadata index.")
+            winston.log('info' , "No documents on scratch space. Cannot update metadata index.")
             return;
         }
         var loadedIndex = scratchSpaceInfo.loadedIndex;
         if (loadedIndex == null) {
-            console.log("Nothing fully loaded so far into ES. Loaded index is null from scratch space.")
-            console.log("Paused index = " + scratchSpaceInfo.pausedIndex);
+            winston.log('info' , "Nothing fully loaded so far into ES. Loaded index is null from scratch space.")
+            winston.log('verbose' , "Paused index = " + scratchSpaceInfo.pausedIndex);
             return;
         }
         loadedIndex = loadedIndex.trim();
@@ -481,18 +498,18 @@ function updateMetadataIndexWithLoadedIndex() {
                 var newMaxBlockSize = scratchSpaceInfo.loadedMaxBlockSize;
                 getCurrentIndexFromMetadata(function (currentMonolithIndex) {
                     if (currentMonolithIndex == null) {
-                        console.log("Metadata has no index in use currently. Setting it as the " +
+                        winston.log('info' , "Metadata has no index in use currently. Setting it as the " +
                             "loaded index " + loadedIndex + " from scratch space");
                         //create a doc
                         updateMetadataIndex(true, loadedIndex, newMaxBlockSize);
                     } else {
                         if (loadedIndex > currentMonolithIndex) {
-                            console.log("Metadata has index " + currentMonolithIndex + " in use currently. Setting it as the " +
+                            winston.log('info' , "Metadata has index " + currentMonolithIndex + " in use currently. Setting it as the " +
                                 "loaded index " + loadedIndex + " from scratch space");
                             //update doc
                             updateMetadataIndex(false, loadedIndex, newMaxBlockSize);
                         } else {
-                            console.log("Metadata has index " + currentMonolithIndex + " in use currently. Not switching since " +
+                            winston.log('info' , "Metadata has index " + currentMonolithIndex + " in use currently. Not switching since " +
                                 "loaded index " + loadedIndex + " from scratch space is older or the same.");
                             return;
                         }
@@ -514,10 +531,10 @@ function getScratchSpaceInfo(cb) {
     var callback = function(response) {
         var httpResponseCode = '404';
         httpResponseCode = response.statusCode;
-        console.log("Scratch Space get document response code=" + httpResponseCode);
+        winston.log('verbose' , "Scratch Space get document response code=" + httpResponseCode);
         if (httpResponseCode == '404') {
             //Metadata Index does not exist
-            console.log("Metadata scratch space index has no documents.");
+            winston.log('verbose' , "Metadata scratch space index has no documents.");
             cb(null);
             return;
         }
@@ -529,9 +546,9 @@ function getScratchSpaceInfo(cb) {
 
         //the whole response has been received, so we just print it out here
         response.on('end', function () {
-            console.log(str);
+            winston.log('verbose' , str);
             if (str == null) {
-                console.log("Empty metadata");
+                winston.log('verbose' , "Empty metadata");
                 cb(null);
             } else {
                 //pass the indexName to the callBack
@@ -556,12 +573,12 @@ function doesNeustarIpReputationIndexExist(neustarIpInfoIndexName, cb) {
     var callback = function(response) {
         var httpResponseCode = '404';
         httpResponseCode = response.statusCode;
-        console.log(neustarIpInfoIndexName + " index exist response code=" + httpResponseCode);
+        winston.log('verbose' , neustarIpInfoIndexName + " index exist response code=" + httpResponseCode);
         if (httpResponseCode == '200') {
-            console.log("This means " + neustarIpInfoIndexName + " index exists.");
+            winston.log('verbose' , "This means " + neustarIpInfoIndexName + " index exists.");
             cb(true);
         } else {
-            console.log("Aborting switching...");
+            winston.log('error' , "Aborting switching...");
             throw new Error("This means " + neustarIpInfoIndexName + " index does not exist.");
         }
     };
@@ -580,12 +597,12 @@ function doesScratchSpaceIndexExist(cb) {
     var callback = function(response) {
         var httpResponseCode = '404';
         httpResponseCode = response.statusCode;
-        console.log("Metadata scratch space index exist response code=" + httpResponseCode);
+        winston.log('verbose' , "Metadata scratch space index exist response code=" + httpResponseCode);
         if (httpResponseCode == '200') {
-            console.log("This means metadata scratch space index exists.");
+            winston.log('verbose' , "This means metadata scratch space index exists.");
             cb(true);
         } else {
-            console.log("This means metadata scratch space index does not exist. Creating it...");
+            winston.log('verbose' , "This means metadata scratch space index does not exist. Creating it...");
             createScratchSpaceIndex(cb);
         }
     };
@@ -631,7 +648,7 @@ function createScratchSpaceIndex(cb) {
     };
 
     var callback = function(response) {
-        console.log("Metadata scratch space index creation response code = " + response.statusCode);
+        winston.log('verbose' , "Metadata scratch space index creation response code = " + response.statusCode);
         var str = '';
 
         //another chunk of data has been recieved, so append it to `str`
@@ -642,11 +659,10 @@ function createScratchSpaceIndex(cb) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (response.statusCode != '200'){
-                console.log(str);
-                console.log("Aborting...");
-                throw new Error("Metadata scratch space index creation failed with error:");
+                winston.log('error' , str);
+                throw new Error("Metadata scratch space index creation failed.");
             } else {
-                console.log(str);
+                winston.log('verbose' , str);
                 cb(true);
             }
         });
@@ -656,7 +672,7 @@ function createScratchSpaceIndex(cb) {
     //This is the data we are posting, it needs to be a string or a buffer
     req.write(JSON.stringify(putData));
     req.end();
-    console.log("Creating metadata index " + scratchSpaceIndexName);
+    winston.log('info' , "Creating metadata index " + scratchSpaceIndexName);
 }
 
 
@@ -675,10 +691,10 @@ function getCurrentIndexFromMetadata(cb) {
     var callback = function(response) {
         var httpResponseCode = '404';
         httpResponseCode = response.statusCode;
-        console.log("Metadata get document response code=" + httpResponseCode);
+        winston.log('verbose' , "Metadata get document response code=" + httpResponseCode);
         if (httpResponseCode == '404') {
             //Metadata Index does not exist
-            console.log("Metadata index has no documents.");
+            winston.log('verbose' , "Metadata index has no documents.");
             cb(null);
             return;
         }
@@ -690,9 +706,9 @@ function getCurrentIndexFromMetadata(cb) {
 
         //the whole response has been received, so we just print it out here
         response.on('end', function () {
-            console.log(str);
+            winston.log('verbose' , str);
             if (str == null) {
-                console.log("Empty metadata");
+                winston.log('verbose' , "Empty metadata");
                 cb(null);
             }
             //pass the indexName to the callBack
@@ -702,7 +718,7 @@ function getCurrentIndexFromMetadata(cb) {
                 cb(null);
             }
             currentIpReputationIndex = currentIpReputationIndex.trim();
-            console.log("Current index from metadata is " + currentIpReputationIndex);
+            winston.log('info' , "Current index from metadata is " + currentIpReputationIndex);
             cb(currentIpReputationIndex);
         });
     }
@@ -770,7 +786,7 @@ function createIndexAndParseCsv(indexName) {
     };
 
     var callback = function(response) {
-        console.log("Neustar index creation response code = " + response.statusCode);
+        winston.log('verbose' , "Neustar index creation response code = " + response.statusCode);
         var str = '';
 
         //another chunk of data has been recieved, so append it to `str`
@@ -781,11 +797,11 @@ function createIndexAndParseCsv(indexName) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (response.statusCode != '200'){
-                console.log("Neustar index creation failed. Aborting upload.");
+                winston.log('error' , "Neustar index creation failed. Aborting upload.");
                 throw new Error("Neustar index creation failed with error:" + str);
                 return;
             }
-            console.log(str);
+            winston.log('verbose' , str);
             parseCsv(indexName, program.skiplines);
         });
     }
@@ -794,7 +810,7 @@ function createIndexAndParseCsv(indexName) {
     //This is the data we are posting, it needs to be a string or a buffer
     req.write(JSON.stringify(putData));
     req.end();
-    console.log("Creating index " + indexName);
+    winston.log('info' , "Creating neustar ip reputation index " + indexName);
 }
 
 
@@ -858,7 +874,7 @@ function createIndex(indexName, cb) {
     };
 
     var callback = function(response) {
-        console.log("Neustar index creation response code = " + response.statusCode);
+        winston.log('verbose' , "Neustar index creation response code = " + response.statusCode);
         var str = '';
 
         //another chunk of data has been recieved, so append it to `str`
@@ -869,10 +885,9 @@ function createIndex(indexName, cb) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (response.statusCode != '200'){
-                console.log("Neustar index creation failed. Aborting upload.");
                 throw new Error("Neustar index creation failed with error:" + str);
             } else {
-                console.log(str);
+                winston.log('verbose' , str);
                 cb(true);
             }
         });
@@ -882,17 +897,17 @@ function createIndex(indexName, cb) {
     //This is the data we are posting, it needs to be a string or a buffer
     req.write(JSON.stringify(putData));
     req.end();
-    console.log("Creating index " + indexName);
+    winston.log('info' , "Creating index " + indexName);
 }
 
 
 function updateSkipLinesIfNeededAndParse(indexName) {
     var origSkipLines;
     if ((program.skiplines) == null) {
-        console.log("Lines skipped is null");
+        winston.log('verbose' , "Lines skipped is null");
         program.skiplines = 0; //set it to 0
     } else {
-        console.log("Lines skipped originally is " + program.skiplines);
+        winston.log('verbose' , "Lines skipped originally is " + program.skiplines);
     }
     origSkipLines = program.skiplines;
 
@@ -915,15 +930,14 @@ function updateSkipLinesIfNeededAndParse(indexName) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (countSucceeded != '200') {
-                console.log("Aborting...");
                 throw new Error("Counting docs on " + indexName + " failed with response code = " + countSucceeded);
             } else {
                 var countArray = str.split(/\r\n|\r|\n/);
                 var docCount = countArray[1];
-                console.log("Number of docs on index " + indexName + " = " + docCount);
+                winston.log('verbose' , "Number of docs on index " + indexName + " = " + docCount);
                 //increment lines to skip by how many docs already loaded into ES index
                 program.skiplines = program.skiplines + docCount;
-                console.log("New skiplines = " + program.skiplines);
+                winston.log('info' , "New skiplines = " + program.skiplines);
                 parseCsv(indexName, origSkipLines);
             }
         });
@@ -1013,7 +1027,7 @@ function parseCsv(indexName, origSkipLines) {
     function uploadBatches(lastUpload) {
         if (output.length <= 0) {
             if (lastUpload) {
-                console.log("Parser Finish calling uploadBatches() and there's nothing in output");
+                winston.log('verbose' , "Parser Finish calling uploadBatches() and there's nothing in output");
                 updateScratchSpaceWithLoadedIndex(indexName, currentMaxBlockSize);
             }
             return;
@@ -1046,6 +1060,7 @@ function parseCsv(indexName, origSkipLines) {
             var rr = makeResponseReader(counterObject, function () {
                 --counterObject.httpWriteCount;
                 if (rr.hasErrors) {
+                    displayStatus();
                     ++counterObject.httpBulkRetry;
                     setImmediate(function () {
                         httpWrite(bufferArray, byteLength, lastUpload);
@@ -1053,7 +1068,7 @@ function parseCsv(indexName, origSkipLines) {
                 } else {
                     displayStatus();
                     if (lastUpload) {
-                        console.log("Parser.finish finished uploading the last remnants of data to be parsed");
+                        winston.log('verbose' , "Parser.finish finished uploading the last remnants of data to be parsed");
                         updateScratchSpaceWithLoadedIndex(indexName, currentMaxBlockSize);
                     }
                 }
@@ -1071,7 +1086,7 @@ function parseCsv(indexName, origSkipLines) {
 
     // Catch any error
     parser.on('error', function(err){
-        console.log(err.message);
+        winston.log('verbose' , err.message);
     });
 
     // When we are done, test that the parsed output matched what expected
@@ -1092,8 +1107,8 @@ function parseCsv(indexName, origSkipLines) {
 
     function displayStatus() {
         process.stdout.write("\033[0G");
-        process.stdout.write("error count: " + counterObject.errorCount + ", upload count: "
-            + counterObject.successCount * batchSize + ", http pending write count: " + counterObject.httpWriteCount
+        process.stdout.write("error count: " + counterObject.errorCount + ", uploaded batch count: "
+            + counterObject.successCount + ", http pending write count: " + counterObject.httpWriteCount
             + ", http write retry: " + counterObject.httpBulkRetry + ", skipped: " + counterObject.skipped);
     }
 
@@ -1170,12 +1185,11 @@ function updateScratchSpaceWithLoadedIndex(newIndex, newMaxBlockSize) {
         //the whole response has been recieved, so we just print it out here
         response.on('end', function () {
             if (updateSucceeded != '200') {
-                console.log(str);
-                console.log("Aborting...");
+                winston.log('error' , str);
                 throw new Error("Updating scratch space loaded index with " + newIndex + " failed with response code = " + updateSucceeded);
             } else {
-                console.log("Updating scratch space loaded index with " + newIndex + " succeeded.");
-                console.log(str);
+                winston.log('info' , "Updating scratch space loaded index with " + newIndex + " succeeded.");
+                winston.log('verbose' , str);
             }
         });
     }
@@ -1227,12 +1241,12 @@ function removeInfoFromScratchSpace(loaded, paused) {
         response.on('end', function () {
             var logString = loaded ? "loadedIndex info" : "pausedIndex info";
             if (updateSucceeded != '200') {
-                console.log("Removing " + logString + " from scratch space failed with response code = " + updateSucceeded);
-                console.log(str);
+                winston.log('error' , "Removing " + logString + " from scratch space failed with response code = " + updateSucceeded);
+                winston.log('error' , str);
                 return;
             } else {
-                console.log("Removing " + logString + " from scratch space succeeded");
-                console.log(str);
+                winston.log('verbose' , "Removing " + logString + " from scratch space succeeded");
+                winston.log('verbose' , str);
             }
         });
     }
@@ -1286,11 +1300,10 @@ function updateMetadataIndex(create, newIndex, newMaxBlockSize) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (uploadSucceeded != '201') {
-                    console.log("Aborting...");
                     throw new Error("Creating new doc on metadata index with new index name " + newIndex + " failed with response code = " + uploadSucceeded);
                 } else {
-                    console.log("Creating new doc on metadata index with new index name " + newIndex + " succeeded.");
-                    console.log(str);
+                    winston.log('info' , "Creating new doc on metadata index with new index name " + newIndex + " succeeded.");
+                    winston.log('verbose' , str);
                 }
             });
         }
@@ -1329,12 +1342,11 @@ function updateMetadataIndex(create, newIndex, newMaxBlockSize) {
             //the whole response has been recieved, so we just print it out here
             response.on('end', function () {
                 if (updateSucceeded != '200') {
-                    console.log(str);
-                    console.log("Aborting...");
+                    winston.log('error' , str);
                     throw new Error("Updating metadata index with new index name " + newIndex + " failed with response code = " + updateSucceeded);
                 } else {
-                    console.log("Updating metadata index with new index name " + newIndex + " succeeded.");
-                    console.log(str);
+                    winston.log('info' , "Updating metadata index with new index name " + newIndex + " succeeded.");
+                    winston.log('verbose' , str);
                 }
             });
         }
