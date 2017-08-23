@@ -15,7 +15,7 @@ var app = express();
 var winston = require('winston');
 var program = require('commander');
 const httpPort = 8081;
-const uploadScript = 'es-neustar-create-load.js';
+const uploadScript = 'loadNeustarReputationIntoES.js';
 const esHost = 'localhost';
 const esPort = httpPort.toString();
 const metadataIndex = 'neustar.metadata';
@@ -25,13 +25,19 @@ const neustarIpRegExp = neustarIpPrefix + '*';
 var uploadTest = false;
 var resumeTest = false;
 var noSwitchTest = false;
+var switchTest = false;
+var switchToLastUsedIndexTest = false;
 var uploadedIndexName;
 const metadataCurrentIndex = neustarIpPrefix+'7789';
 var scratchSpaceLoadedIndex = neustarIpPrefix+'3589';
 const scratchSpacePausedIndex = neustarIpPrefix+'9189';
 const scratchSpaceLoadedIndexMaxBlockSize = 128;
+const metadataCurrentMaxBlockSize = 133;
+const lastUsedMaxBlockSize = 414;
+const lastUsedIndex = neustarIpPrefix+'9200';
 
-var uploadHttpSwitches, resumeHttpSwitches, deleteOldHttpSwitches, deleteAllHttpSwitches, switchHttpSwitches, noSwitchHttpSwitches;
+var uploadHttpSwitches, resumeHttpSwitches, deleteOldHttpSwitches, deleteAllHttpSwitches;
+var switchHttpSwitches, noSwitchHttpSwitches, switchToLastUsedIndexHttpSwitches;
 var maxLimit = 3500;
 const metadataTypeName = '1';
 
@@ -84,6 +90,7 @@ app.put('/' + metadataIndex + '/', function (req, res) {
     deleteAllHttpSwitches["createMetadataIndex"] = true;
     switchHttpSwitches["createMetadataIndex"] = true;
     noSwitchHttpSwitches["createMetadataIndex"] = true;
+    switchToLastUsedIndexHttpSwitches["createMetadataIndex"] = true;
 
     winston.log("verbose", "Got a PUT request for metadata");
     const metadataPutData = {
@@ -138,19 +145,30 @@ app.put('/' + metadataIndex + '/', function (req, res) {
 
 //updateMetadataIndex()
 app.post('/' + metadataIndex + '/' + metadataTypeName + '/0/_update', function (req, res) {
-    if (noSwitchTest) {
-        throw new Error("No Switch test should not have made a call to this HTTP endpoint.");
+    var metadataDocPostData;
+
+    if (switchTest) {
+        metadataDocPostData = {
+            "doc" : {
+                "maxBlockSize" : scratchSpaceLoadedIndexMaxBlockSize,
+                "currentIndex" : scratchSpaceLoadedIndex
+            }
+        }
+    } else if (switchToLastUsedIndexTest) {
+        metadataDocPostData = {
+            "doc" : {
+                "maxBlockSize" : lastUsedMaxBlockSize,
+                "currentIndex" : lastUsedIndex
+            }
+        }
+    } else {
+        throw new Error("Test should not have made a call to this HTTP endpoint.");
     }
 
-    const metadataDocPostData = {
-        "doc" : {
-            "maxBlockSize" : scratchSpaceLoadedIndexMaxBlockSize,
-            "currentIndex" : scratchSpaceLoadedIndex
-        }
-    }
     winston.log("verbose", "Got a POST request to update metadata 0th doc");
     if (req.body === JSON.stringify(metadataDocPostData)) {
         switchHttpSwitches['updateMetadataIndex'] = true;
+        switchToLastUsedIndexHttpSwitches['updateMetadataIndex'] = true;
         res.send('Hello POST for metadata 0th doc update');
     } else {
         winston.log("error", 'POST for metadata has wrong request body');
@@ -168,6 +186,7 @@ app.head('/' + metadataIndex + '/', function (req, res) {
     deleteAllHttpSwitches['metadataExist'] = true;
     switchHttpSwitches['metadataExist'] = true;
     noSwitchHttpSwitches['metadataExist'] = true;
+    switchToLastUsedIndexHttpSwitches['metadataExist'] = true;
 
     winston.log("verbose", "Got a HEAD request for neustar.metadata");
     res.status(404).send("Can't find metadata");
@@ -183,6 +202,7 @@ app.head('/' + scratchSpace, function (req, res) {
     deleteOldHttpSwitches["scratchSpaceExist"] = true;
     switchHttpSwitches["scratchSpaceExist"] = true;
     noSwitchHttpSwitches["scratchSpaceExist"] = true;
+    switchToLastUsedIndexHttpSwitches['scratchSpaceExist'] = true;
 
     winston.log("verbose", "Got a HEAD request for neustar.scratch.space");
     res.status(404).send("Can't find scratch space");
@@ -192,6 +212,7 @@ app.head('/' + scratchSpace, function (req, res) {
 app.head('/' + neustarIpRegExp, function (req, res) {
     switchHttpSwitches['doesNeustarIpReputationIndexExist'] = true;
     noSwitchHttpSwitches['doesNeustarIpReputationIndexExist'] = true;
+    switchToLastUsedIndexHttpSwitches['doesNeustarIpReputationIndexExist'] = true;
 
     winston.log("verbose", "Got a HEAD request for a neustar ip reputation index");
     res.send("IP Reputation index exists");
@@ -207,6 +228,7 @@ app.put('/' + scratchSpace + '/', function (req, res) {
     deleteOldHttpSwitches["createScratchSpaceIndex"] = true;
     switchHttpSwitches["createScratchSpaceIndex"] = true;
     noSwitchHttpSwitches["createScratchSpaceIndex"] = true;
+    switchToLastUsedIndexHttpSwitches["createScratchSpaceIndex"] = true;
 
     const scratchSpacePutData = {
         "settings": {
@@ -228,6 +250,13 @@ app.put('/' + scratchSpace + '/', function (req, res) {
                     "pausedIndex": {
                         "ignore_above": 10922,
                         "type": "string" //measured from epoch
+                    },
+                    "lastUsedIndex": {
+                        "ignore_above": 10922,
+                        "type": "string" //measured from epoch
+                    },
+                    "lastUsedMaxBlockSize": {
+                        "type": "integer"
                     }
                 }
             }
@@ -252,7 +281,9 @@ app.put('/' + scratchSpace + '/' + metadataTypeName + '/0/', function (req, res)
     const putData = {
         "loadedIndex": null,
         "loadedMaxBlockSize": null,
-        "pausedIndex": uploadedIndexName
+        "pausedIndex": uploadedIndexName,
+        "lastUsedIndex": null,
+        "lastUsedMaxBlockSize" : null
     }
 
     if (req.body === JSON.stringify(putData)) {
@@ -263,8 +294,6 @@ app.put('/' + scratchSpace + '/' + metadataTypeName + '/0/', function (req, res)
     }
 });
 
-//updateScratchSpaceWithLoadedIndex() or
-//removeInfoFromScratchSpace
 //createIndex()
 app.put('/' + neustarIpRegExp + '/', function (req, res) {
     winston.log("verbose", "Got a PUT request for neustar ip reputation index creation");
@@ -325,12 +354,19 @@ app.put('/' + neustarIpRegExp + '/', function (req, res) {
     if (req.body === JSON.stringify(NeustarIndexPutData)) {
         res.send('Neustar ip reputation index ' + uploadedIndexName + ' created');
     } else {
-        winston.log("error", 'PUT for scratch space create index has wrong request body');
-        res.status(404).send('PUT for scratch space create index has wrong request body');
+        winston.log("error", 'PUT for ip reputation create index has wrong request body');
+        res.status(404).send('PUT for ip reputation create index has wrong request body');
     }
 });
 
+//updateScratchSpaceWithLastUsedIndex
+//removeInfoFromScratchSpace
+//updateScratchSpaceIndexWithPausedIndex - not used in any tests
+//updateScratchSpaceWithLoadedIndex
 app.post('/' + scratchSpace + '/' + metadataTypeName + '/0/_update', function (req, res) {
+    if (switchToLastUsedIndexTest) {
+        console.log(req.body);
+    }
     var removePausedIndex, removeLoadedIndex;
     var loadedIndex;
     if (uploadTest || resumeTest) {
@@ -348,6 +384,14 @@ app.post('/' + scratchSpace + '/' + metadataTypeName + '/0/_update', function (r
                 "pausedIndex": null
             }
         }
+    } else if (switchTest) {
+        //updateScratchSpaceWithLastUsedIndex
+        postData = {
+            "doc" : {
+                "lastUsedIndex": metadataCurrentIndex,
+                "lastUsedMaxBlockSize": metadataCurrentMaxBlockSize
+            }
+        }
     } else {
         //removeInfoFromScratchSpace
         removePausedIndex = {
@@ -363,11 +407,15 @@ app.post('/' + scratchSpace + '/' + metadataTypeName + '/0/_update', function (r
             }
         }
     }
+
     if ((uploadTest || resumeTest) && req.body === JSON.stringify(postData)) {
         res.send('LoadedIndex on Scratch space updated with ' + loadedIndex + ' and maxBlockSize with ' + maxLimit);
     } else if (uploadTest || resumeTest) {
         winston.log("error", 'POST for scratch space update has wrong request body');
         res.status(404).send('POST for scratch space update has wrong request body');
+    } else if (switchTest && req.body === JSON.stringify(postData)) {
+        switchHttpSwitches['updateScratchSpaceWithLastUsedIndex'] = true;
+        res.send('LastUsedIndex on Scratch space updated with ' + metadataCurrentIndex + ' and lastUsedMaxBlockSize with ' + metadataCurrentMaxBlockSize);
     } else if (req.body === JSON.stringify(removePausedIndex)) {
         //deleteOld does not delete Paused Index since it's newer than what's the current index in metadata
         //deleteAll should reach here
@@ -392,13 +440,16 @@ app.get('/' + scratchSpace + '/' + metadataTypeName + '/0/_source', function (re
     deleteOldHttpSwitches['getScratchSpaceDoc'] = true;
     switchHttpSwitches['getScratchSpaceDoc'] = true;
     noSwitchHttpSwitches['getScratchSpaceDoc'] = true;
+    switchToLastUsedIndexHttpSwitches['getScratchSpaceDoc'] = true;
 
     winston.log("verbose", "Got a GET request for scratch space 0th doc");
     if (!uploadTest) {
         var scratchSpaceData = {
             "loadedIndex": scratchSpaceLoadedIndex,
             "loadedMaxBlockSize": scratchSpaceLoadedIndexMaxBlockSize,
-            "pausedIndex": scratchSpacePausedIndex
+            "pausedIndex": scratchSpacePausedIndex,
+            "lastUsedIndex" : lastUsedIndex,
+            "lastUsedMaxBlockSize" : lastUsedMaxBlockSize
         }
         res.send(scratchSpaceData);
     } else {
@@ -406,18 +457,19 @@ app.get('/' + scratchSpace + '/' + metadataTypeName + '/0/_source', function (re
     }
 });
 
-//getCurrentIndexFromMetadata()
+//getCurrentIndexAndBlockSizeFromMetadata()
 app.get('/' + metadataIndex + '/' + metadataTypeName + '/0/_source', function (req, res) {
     winston.log("verbose", "Got a GET request for metadata index 0th doc");
 
-    deleteOldHttpSwitches['getCurrentIndexFromMetadata'] = true;
-    deleteAllHttpSwitches['getCurrentIndexFromMetadata'] = true;
-    switchHttpSwitches['getCurrentIndexFromMetadata'] = true;
-    noSwitchHttpSwitches['getCurrentIndexFromMetadata'] = true;
+    deleteOldHttpSwitches['getCurrentIndexAndBlockSizeFromMetadata'] = true;
+    deleteAllHttpSwitches['getCurrentIndexAndBlockSizeFromMetadata'] = true;
+    switchHttpSwitches['getCurrentIndexAndBlockSizeFromMetadata'] = true;
+    noSwitchHttpSwitches['getCurrentIndexAndBlockSizeFromMetadata'] = true;
+    switchToLastUsedIndexHttpSwitches['getCurrentIndexAndBlockSizeFromMetadata'] = true;
 
     const metadataDoc = {
         "currentIndex": metadataCurrentIndex,
-        "maxBlockSize": 133,
+        "maxBlockSize": metadataCurrentMaxBlockSize,
         "version": 'bca'
     };
     res.send(metadataDoc);
@@ -517,7 +569,7 @@ function resetSwitches() {
         "scratchSpaceExist" : false,
         "createScratchSpaceIndex" : false,
         "getAllNeustarIndexes" : false,
-        "getCurrentIndexFromMetadata" : false,
+        "getCurrentIndexAndBlockSizeFromMetadata" : false,
         "getScratchSpaceDoc" : false,
         "removeLoadedIndexFromScratchSpace" : false,
         "deleteIndex" : false
@@ -529,7 +581,7 @@ function resetSwitches() {
         "scratchSpaceExist" : false,
         "createScratchSpaceIndex" : false,
         "getAllNeustarIndexes" : false,
-        "getCurrentIndexFromMetadata" : false,
+        "getCurrentIndexAndBlockSizeFromMetadata" : false,
         "getScratchSpaceDoc" : false,
         "removeLoadedIndexFromScratchSpace" : false,
         "removePausedIndexFromScratchSpace" : false,
@@ -543,8 +595,9 @@ function resetSwitches() {
         "createScratchSpaceIndex" : false,
         "getScratchSpaceDoc" : false,
         "doesNeustarIpReputationIndexExist" : false,
-        "getCurrentIndexFromMetadata" : false,
-        "updateMetadataIndex" : false
+        "getCurrentIndexAndBlockSizeFromMetadata" : false,
+        "updateMetadataIndex" : false,
+        "updateScratchSpaceWithLastUsedIndex" : false
     };
 
     noSwitchHttpSwitches = {
@@ -554,7 +607,18 @@ function resetSwitches() {
         "createScratchSpaceIndex" : false,
         "getScratchSpaceDoc" : false,
         "doesNeustarIpReputationIndexExist" : false,
-        "getCurrentIndexFromMetadata" : false
+        "getCurrentIndexAndBlockSizeFromMetadata" : false
+    };
+
+    switchToLastUsedIndexHttpSwitches = {
+        "metadataExist" : false,
+        "createMetadataIndex" : false,
+        "scratchSpaceExist" : false,
+        "createScratchSpaceIndex" : false,
+        "getScratchSpaceDoc" : false,
+        "doesNeustarIpReputationIndexExist" : false,
+        "getCurrentIndexAndBlockSizeFromMetadata" : false,
+        "updateMetadataIndex" : false
     };
 }
 
@@ -671,6 +735,7 @@ function testNoSwitch() {
         }
         checkAllCallsMade(noSwitchHttpSwitches);
         winston.log("info", 'finished running ' + uploadScript + ' with switch command and no switching');
+        noSwitchTest = false;
         testSwitch();
     });
 }
@@ -683,7 +748,8 @@ function testSwitch() {
     scratchSpaceLoadedIndex = neustarIpPrefix + '9999';
     winston.log("info", 'Begin running ' + uploadScript + ' with switch command and switching');
     resetSwitches();
-    noSwitchTest = false;
+    switchTest = true;
+
     runScript(uploadScript, '--switch', function (err) {
         if (err) {
             throw err;
@@ -691,6 +757,24 @@ function testSwitch() {
         checkAllCallsMade(switchHttpSwitches);
         winston.log("info", 'finished running ' + uploadScript + ' with switch command and switching');
         scratchSpaceLoadedIndex = tempIndex;
+        switchTest = false;
+        testSwitchToLastIndex();
+    });
+}
+
+function testSwitchToLastIndex() {
+    //this tests a switchToLastIndex
+    winston.log("info", 'Begin running ' + uploadScript + ' with switchToLastIndex command');
+    resetSwitches();
+    switchToLastUsedIndexTest = true;
+
+    runScript(uploadScript, '--switchToLastIndex', function (err) {
+        if (err) {
+            throw err;
+        }
+        checkAllCallsMade(switchToLastUsedIndexHttpSwitches);
+        winston.log("info", 'finished running ' + uploadScript + ' with switchToLastIndex command');
+        switchToLastUsedIndexTest = false;
         //close server after this last test
         server.listen(httpPort, function () {
             server.close();

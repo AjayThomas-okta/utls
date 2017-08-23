@@ -1,29 +1,29 @@
 /*
-Neustar ipinfo index creation and loading of docs
-this script is idempotent.
-This script creates following indexes:
-- neustar.metadata which gives info currently used by monolith (if any), maxBlockSize for that index
-- neustar.scratch.space which stores intermediate info like last uploaded index and its maxBlockSize, paused index
-- a new index where Nuestar ip reputation data is loaded when the upload command is run
+ Neustar ipinfo index creation and loading of docs
+ this script is idempotent.
+ This script creates following indexes:
+ - neustar.metadata which gives info currently used by monolith (if any), maxBlockSize for that index
+ - neustar.scratch.space which stores intermediate info like last uploaded index and its maxBlockSize, paused index
+ - a new index where Nuestar ip reputation data is loaded when the upload command is run
 
-The csv file that is passed as input must have a header (specifying the columns), that is skipped (even if you dont ask it to skip)
-every line after that is processed unless you skip them with the -s argument
+ The csv file that is passed as input must have a header (specifying the columns), that is skipped (even if you dont ask it to skip)
+ every line after that is processed unless you skip them with the -s argument
 
-Options:
-Upload - uploads csv file to a new index (if there was not already an index that had a paused upload).
-         If there was a paused index, then uploading continues on that until it is complete
-DeleteAll - Delete all indexes that are not used by the monolith (got from neustar.metadata)
-DeleteOld - Delete all indexes that are older than what the monolith is using (got from neustar.metadata)
-Switch - Switch the index being used by the monolith to the latest fully loaded index (this is updating neustar.metadata)
+ Options:
+ Upload - uploads csv file to a new index (if there was not already an index that had a paused upload).
+ If there was a paused index, then uploading continues on that until it is complete
+ DeleteAll - Delete all indexes that are not used by the monolith (got from neustar.metadata)
+ DeleteOld - Delete all indexes that are older than what the monolith is using (got from neustar.metadata)
+ Switch - Switch the index being used by the monolith to the latest fully loaded index (this is updating neustar.metadata)
 
-This script also allows for resuming of uploading docs loading into Neustar index (if it was paused because of a system crash or Ctrl + C)
-Neustar index is of the form neustar.ipinfo.* (where * is the timestamp of when the index was created)
-it is of type int (time form epoch)
+ This script also allows for resuming of uploading docs loading into Neustar index (if it was paused because of a system crash or Ctrl + C)
+ Neustar index is of the form neustar.ipinfo.* (where * is the timestamp of when the index was created)
+ it is of type int (time form epoch)
 
-LogLevels
-Default is info
-Run with logLevel --verbose to see all logs
-*/
+ LogLevels
+ Default is info
+ Run with logLevel --verbose to see all logs
+ */
 
 var parse = require('csv-parse');
 var http = require('http');
@@ -40,6 +40,7 @@ program
     .option('--deleteOld', 'delete indexes older that whats used by monolith')
     .option('--upload', 'upload csv file')
     .option('--switch', 'start using new index for ip reputation')
+    .option('--switchToLastIndex', 'start using new index for ip reputation')
     .option('--logLevel [winstonLogLevel]', 'log level for console logging')
     .parse(process.argv);
 
@@ -83,17 +84,19 @@ function optionCheck() {
     } else {
         winston.log('verbose', "ElasticSearch host=" + program.host + " and port=" + program.port);
     }
-    if (program.deleteAll == null && program.deleteOld == null && program.upload == null && program.switch == null) {
+    if (program.deleteAll == null && program.deleteOld == null && program.upload == null && program.switch == null && program.switchToLastIndex == null) {
         throw new Error("No option selected. Use --delete to clear old indexes, --upload to upload csv file " +
             "or --switch to enable the new index");
-    } else if (program.deleteOld != null && program.deleteAll == null && program.upload == null && program.switch == null) {
+    } else if (program.deleteOld != null && program.deleteAll == null && program.upload == null && program.switch == null && program.switchToLastIndex == null) {
         winston.log('verbose', "Delete old indexes option selected. Program will now delete old unused elasticsearch indexes for Neustar IP reputation.");
-    } else if (program.deleteOld == null && program.deleteAll != null && program.upload == null && program.switch == null) {
+    } else if (program.deleteOld == null && program.deleteAll != null && program.upload == null && program.switch == null && program.switchToLastIndex == null) {
         winston.log('verbose', "Delete all indexes option selected. Program will now delete all unused elasticsearch indexes for Neustar IP reputation.");
-    } else if (program.deleteOld == null && program.deleteAll == null && program.upload != null && program.switch == null) {
+    } else if (program.deleteOld == null && program.deleteAll == null && program.upload != null && program.switch == null && program.switchToLastIndex == null) {
         winston.log('verbose', "Upload option selected. Program will upload Neustar IP reputation to a new index.");
-    } else if (program.deleteOld == null && program.deleteAll == null && program.upload == null && program.switch != null) {
+    } else if (program.deleteOld == null && program.deleteAll == null && program.upload == null && program.switch != null && program.switchToLastIndex == null) {
         winston.log('verbose', "Switch option selected. Program will switch current index in metadata index to use latest Neustar IP reputation index.");
+    } else if (program.deleteOld == null && program.deleteAll == null && program.upload == null && program.switch == null && program.switchToLastIndex != null) {
+        winston.log('verbose', "Switch option to Last Index selected. Program will switch current index in metadata index to use last used index from metadata.");
     } else {
         throw new Error("More than one option among delete, upload, switch not allowed.");
     }
@@ -207,7 +210,7 @@ function doOperationBasedOnOption() {
         deleteUnusedIndexes(true);
     } else if (program.upload != null) {
         uploadCsv();
-    } else if (program.switch != null) {
+    } else if (program.switch != null || program.switchToLastIndex != null) {
         switchIndex();
     } else {
         throw new Error("doOperationBasedOnOption failed. Aborting...");
@@ -253,18 +256,23 @@ function deleteUnusedIndexes(deleteAll) {
                     return;
                 }
                 var i;
-                getCurrentIndexFromMetadata(function(currentMonolithIndex) {
+                getCurrentIndexAndBlockSizeFromMetadata(function(currentMonolithIndex, currentMaxBlockSize) {
                     getScratchSpaceInfo(function (scratchSpaceInfo) {
                         var loadedIndex = null;
                         var pausedIndex = null;
-                        if (scratchSpaceInfo !== null) {
+                        var lastUsedIndex = null;
+                        if (scratchSpaceInfo != null) {
                             loadedIndex = scratchSpaceInfo.loadedIndex;
                             pausedIndex = scratchSpaceInfo.pausedIndex;
-                            if (loadedIndex !== null) {
+                            lastUsedIndex = scratchSpaceInfo.lastUsedIndex;
+                            if (loadedIndex != null) {
                                 loadedIndex = loadedIndex.trim();
                             }
-                            if (pausedIndex !== null) {
+                            if (pausedIndex != null) {
                                 pausedIndex = pausedIndex.trim();
+                            }
+                            if (lastUsedIndex != null) {
+                                lastUsedIndex = lastUsedIndex.trim();
                             }
                         }
                         var somethingDeleted = false;
@@ -277,6 +285,9 @@ function deleteUnusedIndexes(deleteAll) {
                                 }
                                 if (arrayOfIndexes[i] === pausedIndex) {
                                     removePausedIndexFromScratchSpace();
+                                }
+                                if (arrayOfIndexes[i] === lastUsedIndex) {
+                                    removeLastUsedIndexFromScratchSpace();
                                 }
                             } else {
                                 if (deleteAll) {
@@ -413,7 +424,9 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
         const putData = {
             "loadedIndex": null,
             "loadedMaxBlockSize": null,
-            "pausedIndex": indexName
+            "pausedIndex": indexName,
+            "lastUsedIndex": null,
+            "lastUsedMaxBlockSize" : null
         }
 
         var req = http.request(options, callback);
@@ -471,12 +484,12 @@ function updateScratchSpaceIndexWithPausedIndex(indexName, create, cb) {
 function switchIndex() {
     doesScratchSpaceIndexExist(function (success) {
         if (success === true) {
-            updateMetadataIndexWithLoadedIndex();
+            updateMetadataCurrentIndex();
         }
     });
 }
 
-function updateMetadataIndexWithLoadedIndex() {
+function updateMetadataCurrentIndex() {
     //get the only doc on the metadata index
     //its contents is in a JSON format
     //one of the keys (currentIndex) is the name of the current neustar ip info
@@ -485,38 +498,65 @@ function updateMetadataIndexWithLoadedIndex() {
             winston.log('info' , "No documents on scratch space. Cannot update metadata index.")
             return;
         }
-        var loadedIndex = scratchSpaceInfo.loadedIndex;
-        if (loadedIndex == null) {
-            winston.log('info' , "Nothing fully loaded so far into ES. Loaded index is null from scratch space.")
-            winston.log('verbose' , "Paused index = " + scratchSpaceInfo.pausedIndex);
+
+        var indexToSwitchTo, switchMaxBlockSize;
+        if(program.switchToLastIndex != null) {
+            indexToSwitchTo = scratchSpaceInfo.lastUsedIndex;
+            switchMaxBlockSize = scratchSpaceInfo.lastUsedMaxBlockSize;
+            if (indexToSwitchTo == null) {
+                winston.log('info' , "No last used index in scratch space.")
+                winston.log('verbose' , "Paused index = " + scratchSpaceInfo.pausedIndex + " and loaded index = " + scratchSpaceInfo.loadedIndex);
+                return;
+            }
+        } else {
+            indexToSwitchTo = scratchSpaceInfo.loadedIndex;
+            if (indexToSwitchTo == null) {
+                winston.log('info' , "Nothing fully loaded so far into ES. Loaded index is null from scratch space.")
+                winston.log('verbose' , "Paused index = " + scratchSpaceInfo.pausedIndex);
+                return;
+            }
+            switchMaxBlockSize = scratchSpaceInfo.loadedMaxBlockSize;
+        }
+        indexToSwitchTo = indexToSwitchTo.trim();
+
+        if (switchMaxBlockSize == null) {
+            winston.log("error", "Index to switch to " + indexToSwitchTo + " has null maxBlockSize. Bad state! Aborting...");
+            throw new Error("Index to switch to " + indexToSwitchTo + " has null maxBlockSize.");
             return;
         }
-        loadedIndex = loadedIndex.trim();
+
         //check if loaded index is present before modifying neustar.metadata
-        doesNeustarIpReputationIndexExist(loadedIndex, function (success) {
+        doesNeustarIpReputationIndexExist(indexToSwitchTo, function (success) {
             if (success) {
-                var newMaxBlockSize = scratchSpaceInfo.loadedMaxBlockSize;
-                getCurrentIndexFromMetadata(function (currentMonolithIndex) {
+                getCurrentIndexAndBlockSizeFromMetadata(function (currentMonolithIndex, currentMaxBlockSize) {
                     if (currentMonolithIndex == null) {
-                        winston.log('info' , "Metadata has no index in use currently. Setting it as the " +
-                            "loaded index " + loadedIndex + " from scratch space");
+                        winston.log('info', "Metadata has no index in use currently. Setting it as the " +
+                            "loaded index " + indexToSwitchTo + " from scratch space");
                         //create a doc
-                        updateMetadataIndex(true, loadedIndex, newMaxBlockSize);
+                        updateMetadataIndex(true, indexToSwitchTo, switchMaxBlockSize);
                     } else {
-                        if (loadedIndex > currentMonolithIndex) {
+                        if (program.switchToLastIndex != null && indexToSwitchTo != currentMonolithIndex) {
+                            //we are switching to last Used Index
+                            //so it could be older than what is used by monolith, and we should allow that
+                            updateMetadataIndex(false, indexToSwitchTo, switchMaxBlockSize);
+                        } else if (indexToSwitchTo > currentMonolithIndex) {
                             winston.log('info' , "Metadata has index " + currentMonolithIndex + " in use currently. Setting it as the " +
-                                "loaded index " + loadedIndex + " from scratch space");
+                                "loaded index " + indexToSwitchTo + " from scratch space");
                             //update doc
-                            updateMetadataIndex(false, loadedIndex, newMaxBlockSize);
+                            updateMetadataIndex(false, indexToSwitchTo, switchMaxBlockSize);
+                            updateScratchSpaceWithLastUsedIndex(currentMonolithIndex, currentMaxBlockSize);
                         } else {
                             winston.log('info' , "Metadata has index " + currentMonolithIndex + " in use currently. Not switching since " +
-                                "loaded index " + loadedIndex + " from scratch space is older or the same.");
+                                "loaded index " + indexToSwitchTo + " from scratch space is older or the same.");
                             return;
                         }
                     }
                 })
             }
         })
+
+
+
     });
 }
 
@@ -631,6 +671,13 @@ function createScratchSpaceIndex(cb) {
                     "pausedIndex": {
                         "ignore_above": 10922,
                         "type": "string" //measured from epoch
+                    },
+                    "lastUsedIndex": {
+                        "ignore_above": 10922,
+                        "type": "string" //measured from epoch
+                    },
+                    "lastUsedMaxBlockSize": {
+                        "type": "integer"
                     }
                 }
             }
@@ -676,7 +723,7 @@ function createScratchSpaceIndex(cb) {
 }
 
 
-function getCurrentIndexFromMetadata(cb) {
+function getCurrentIndexAndBlockSizeFromMetadata(cb) {
     //get the only doc on the metadata index
     //its contents is in a JSON format
     //one of the keys (currentIndex) is the name of the current neustar ip info
@@ -714,12 +761,13 @@ function getCurrentIndexFromMetadata(cb) {
             //pass the indexName to the callBack
             var jsonMetadataString = JSON.parse(str);
             var currentIpReputationIndex = jsonMetadataString.currentIndex;
+            var maxBlockSizeOfCurrentIndex = jsonMetadataString.maxBlockSize;
             if (currentIpReputationIndex == null) {
-                cb(null);
+                cb(null, null);
             }
             currentIpReputationIndex = currentIpReputationIndex.trim();
-            winston.log('info' , "Current index from metadata is " + currentIpReputationIndex);
-            cb(currentIpReputationIndex);
+            winston.log('info' , "Current index from metadata is " + currentIpReputationIndex + " and maxBlckSize is " + maxBlockSizeOfCurrentIndex);
+            cb(currentIpReputationIndex, maxBlockSizeOfCurrentIndex);
         });
     }
 
@@ -951,7 +999,7 @@ function parseCsv(indexName, origSkipLines) {
     var output = [];
 // Create the parser
     var parser = parse({delimiter: ',', columns: true, trim: true});
-    var batchSize = program.batchsize !== null && program.batchsize > 0 ? program.batchsize : 1000;
+    var batchSize = program.batchsize != null && program.batchsize > 0 ? program.batchsize : 1000;
     var byteCount = 0;
 
     if (origSkipLines == null) {
@@ -964,7 +1012,7 @@ function parseCsv(indexName, origSkipLines) {
     parser.on('readable', function() {
         while(record = parser.read()){
             ++total;
-            if (program.skiplines !== null && total <= program.skiplines) {
+            if (program.skiplines != null && total <= program.skiplines) {
                 ++counterObject.skipped;
                 //original skipped lines should be skipped and not checked
                 //if it's resuming, then we need to check the maxBlockSize for the skipped rows too
@@ -1005,7 +1053,7 @@ function parseCsv(indexName, origSkipLines) {
 
     function replaceField(map, k) {
         var s = map[k];
-        if (s !== null) {
+        if (s != null) {
             map[k] = tryConvertToInt(s);
         }
     }
@@ -1151,7 +1199,7 @@ function parseCsv(indexName, origSkipLines) {
             oThis.jsonParseError.push(e);
         });
 
-        if (onEnd !== null) {
+        if (onEnd != null) {
             oThis.source.on('end', function () {
                 onEnd();
             });
@@ -1206,19 +1254,10 @@ function updateScratchSpaceWithLoadedIndex(newIndex, newMaxBlockSize) {
     //This is the data we are posting, it needs to be a string or a buffer
     req.write(JSON.stringify(postData));
     req.end();
-
 }
 
-function removePausedIndexFromScratchSpace() {
-    removeInfoFromScratchSpace(false, true);
-}
-
-function removeLoadedIndexFromScratchSpace() {
-    removeInfoFromScratchSpace(true, false);
-}
-
-function removeInfoFromScratchSpace(loaded, paused) {
-    //update the doc on metadata index and remove loaded index or paused index based on above args
+function updateScratchSpaceWithLastUsedIndex(lastUsedIndex, lastUsedMaxBlockSize) {
+    //update the doc on scratch space last used Index and last maxBlockSize
     var options = {
         host: program.host,
         port: program.port,
@@ -1237,9 +1276,68 @@ function removeInfoFromScratchSpace(loaded, paused) {
             str += chunk;
         });
 
+        //the whole response has been recieved, so we just print it out here
+        response.on('end', function () {
+            if (updateSucceeded != '200') {
+                winston.log('error' , str);
+                throw new Error("Updating scratch space last used index with " + lastUsedIndex + " failed with response code = " + updateSucceeded);
+            } else {
+                winston.log('info' , "Updating scratch space loaded index with " + lastUsedIndex + " succeeded.");
+                winston.log('verbose' , str);
+            }
+        });
+    }
+
+    const postData = {
+        "doc" : {
+            "lastUsedIndex": lastUsedIndex,
+            "lastUsedMaxBlockSize": lastUsedMaxBlockSize
+        }
+    }
+
+    var req = http.request(options, callback);
+    //This is the data we are posting, it needs to be a string or a buffer
+    req.write(JSON.stringify(postData));
+    req.end();
+
+}
+
+function removeLastUsedIndexFromScratchSpace() {
+    removeInfoFromScratchSpace("lastUsed");
+}
+
+function removePausedIndexFromScratchSpace() {
+    removeInfoFromScratchSpace("paused");
+}
+
+function removeLoadedIndexFromScratchSpace() {
+    removeInfoFromScratchSpace("loaded");
+}
+
+function removeInfoFromScratchSpace(indexToBeDeleted) {
+    //update the doc on metadata index and remove loaded index or paused index based on above args
+    var options = {
+        host: program.host,
+        port: program.port,
+        path: '/' + scratchSpaceIndexName + '/' + metadataTypeName + '/0/_update',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        method: 'POST'
+    };
+
+    var logString;
+
+    var callback = function(response) {
+        var updateSucceeded = response.statusCode;
+        var str = '';
+        //another chunk of data has been recieved, so append it to `str`
+        response.on('data', function (chunk) {
+            str += chunk;
+        });
+
         //the whole response has been received, so we just print it out here
         response.on('end', function () {
-            var logString = loaded ? "loadedIndex info" : "pausedIndex info";
             if (updateSucceeded != '200') {
                 winston.log('error' , "Removing " + logString + " from scratch space failed with response code = " + updateSucceeded);
                 winston.log('error' , str);
@@ -1253,19 +1351,33 @@ function removeInfoFromScratchSpace(loaded, paused) {
 
     var postData;
 
-    if (loaded) {
-        postData = {
-            "doc" : {
-                "loadedIndex": null,
-                "loadedMaxBlockSize": null
+    switch(indexToBeDeleted) {
+        case "loaded":
+            postData = {
+                "doc" : {
+                    "loadedIndex": null,
+                    "loadedMaxBlockSize": null
+                }
             }
-        }
-    } else {
-        postData = {
-            "doc" : {
-                "pausedIndex": null
+            logString = "loadedIndex info";
+            break;
+        case "paused":
+            postData = {
+                "doc" : {
+                    "pausedIndex": null
+                }
             }
-        }
+            logString = "pausedIndex info";
+            break;
+        case "lastUsed":
+            postData = {
+                "doc" : {
+                    "lastUsedIndex": null,
+                    "lastUsedMaxBlockSize": null
+                }
+            }
+            logString = "lastUsedIndex info";
+            break;
     }
 
     var req = http.request(options, callback);
@@ -1275,7 +1387,7 @@ function removeInfoFromScratchSpace(loaded, paused) {
 
 }
 
-function updateMetadataIndex(create, newIndex, newMaxBlockSize) {
+function updateMetadataIndex(create, newIndex, newMaxBlockSize, oldIndex, oldBlockSize) {
     if (create === true) {
         //there were no docs on the metadata index
         //create a new one with new index name
@@ -1311,7 +1423,9 @@ function updateMetadataIndex(create, newIndex, newMaxBlockSize) {
         const putData = {
             "maxBlockSize" : newMaxBlockSize,
             "currentIndex" : newIndex,
-            "version" : "something" //do we need this??
+            "version" : "something", //do we need this??
+            "lastUsedIndex" : null,
+            "lastUsedMaxBlockSize" : null
         }
 
         var req = http.request(options, callback);
@@ -1320,6 +1434,7 @@ function updateMetadataIndex(create, newIndex, newMaxBlockSize) {
         req.end();
 
     } else {
+
         //update the doc on metadata index with new index name and new maxBlockSize
         var options = {
             host: program.host,
