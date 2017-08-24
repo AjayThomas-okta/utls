@@ -38,7 +38,12 @@ const lastUsedIndex = neustarIpPrefix+'9200';
 
 var uploadHttpSwitches, resumeHttpSwitches, deleteOldHttpSwitches, deleteAllHttpSwitches;
 var switchHttpSwitches, noSwitchHttpSwitches, switchToLastUsedIndexHttpSwitches;
-var maxLimit = 3500;
+//maxLimit should be under 1001 since one batch size is capped at 1000
+//if you increase this, then fix Bulk upload test since that breaks
+//this is not a stress test, so 800 is alright
+var maxLimit = 800;
+var resumeFrom = 156;
+
 const metadataTypeName = '1';
 
 program
@@ -364,9 +369,6 @@ app.put('/' + neustarIpRegExp + '/', function (req, res) {
 //updateScratchSpaceIndexWithPausedIndex - not used in any tests
 //updateScratchSpaceWithLoadedIndex
 app.post('/' + scratchSpace + '/' + metadataTypeName + '/0/_update', function (req, res) {
-    if (switchToLastUsedIndexTest) {
-        console.log(req.body);
-    }
     var removePausedIndex, removeLoadedIndex;
     var loadedIndex;
     if (uploadTest || resumeTest) {
@@ -513,12 +515,7 @@ app.get('/_cat/count/' + neustarIpRegExp, function (req, res) {
     resumeHttpSwitches['updateSkipLinesIfNeededAndParse'] = true;
 
     //skip the first n lines
-    var getCountData;
-    if (maxLimit > 1002) {
-        getCountData = "count\n1001\n";
-    } else {
-        getCountData = "count\n1\n";
-    }
+    var getCountData = "count\n" + resumeFrom + "\n";
     res.send(getCountData);
 });
 
@@ -529,9 +526,31 @@ app.post('/' + neustarIpRegExp + '/' + metadataTypeName + '/_bulk', function (re
     uploadHttpSwitches['httpWrite'] = true;
     resumeHttpSwitches['httpWrite'] = true;
 
-    //todo: check request body
-    //logic is different for regular upload vs resume
-    //different expected end for resume - should be one more than previous upload
+    var reqBody = req.body.split(/\r\n|\r|\n/);
+    if (resumeTest) {
+        if (JSON.parse(reqBody[1]).startIP == (((resumeFrom * (resumeFrom+1))/2) + resumeFrom + 1)) {
+            winston.log("verbose", "Resume test start IP of first row is " + JSON.parse(reqBody[1]).startIP);
+        } else {
+            throw new Error("Resume test start IP of first row is not " + (((resumeFrom * (resumeFrom+1))/2) + resumeFrom + 1));
+        }
+    } else if (uploadTest) {
+        //console.log(reqBody);
+        if (JSON.parse(reqBody[1]).startIP == 1) {
+            winston.log("verbose", "Upload test start IP of first row is 1");
+        } else {
+            throw new Error("Upload test start IP of first row is not 1");
+        }
+        //this works since the std_input script that is used as csv input
+        //prints maxLimit number of csv rows with the start IP starting with 1 for the first row and increasing to 3 and then 6 and so on..
+        if ((JSON.parse(reqBody[(maxLimit*2) - 1]).startIP) == (maxLimit * (maxLimit+1))/2) {
+            winston.log("verbose", "Upload test start IP of last row is " + (maxLimit * (maxLimit+1))/2);
+        } else {
+            throw new Error("Upload test start IP of last row is not " + (maxLimit * (maxLimit+1))/2);
+        }
+    } else {
+        throw new Error("Bulk upload HTTP endpoint should not have been hit for this test");
+    }
+
     const someResponse = {
         "ajay": 12
     };

@@ -3,7 +3,7 @@
  this script is idempotent.
  This script creates following indexes:
  - neustar.metadata which gives info currently used by monolith (if any), maxBlockSize for that index
- - neustar.scratch.space which stores intermediate info like last uploaded index and its maxBlockSize, paused index
+ - neustar.scratch.space which stores intermediate info like latest uploaded index and its maxBlockSize, paused index, last index used by monolith and its maxBlockSize
  - a new index where Nuestar ip reputation data is loaded when the upload command is run
 
  The csv file that is passed as input must have a header (specifying the columns), that is skipped (even if you dont ask it to skip)
@@ -15,6 +15,7 @@
  DeleteAll - Delete all indexes that are not used by the monolith (got from neustar.metadata)
  DeleteOld - Delete all indexes that are older than what the monolith is using (got from neustar.metadata)
  Switch - Switch the index being used by the monolith to the latest fully loaded index (this is updating neustar.metadata)
+ SwitchToLastIndex - Switch the index being used by the monolith to the last index that the monolith used
 
  This script also allows for resuming of uploading docs loading into Neustar index (if it was paused because of a system crash or Ctrl + C)
  Neustar index is of the form neustar.ipinfo.* (where * is the timestamp of when the index was created)
@@ -132,6 +133,30 @@ function doesMetadataIndexExist() {
             winston.log('verbose' , "This means metadata index does not exist. Creating it...");
             winston.log('verbose' , str);
             createMetadataIndex();
+        }
+    };
+
+    http.request(options, callback).end();
+}
+
+function doesScratchSpaceIndexExist(cb) {
+    var options = {
+        host: program.host,
+        port: program.port,
+        path: '/' + scratchSpaceIndexName,
+        method: 'HEAD'
+    };
+
+    var callback = function(response) {
+        var httpResponseCode = '404';
+        httpResponseCode = response.statusCode;
+        winston.log('verbose' , "Metadata scratch space index exist response code=" + httpResponseCode);
+        if (httpResponseCode == '200') {
+            winston.log('verbose' , "This means metadata scratch space index exists.");
+            cb(true);
+        } else {
+            winston.log('verbose' , "This means metadata scratch space index does not exist. Creating it...");
+            createScratchSpaceIndex(cb);
         }
     };
 
@@ -626,29 +651,7 @@ function doesNeustarIpReputationIndexExist(neustarIpInfoIndexName, cb) {
     http.request(options, callback).end();
 }
 
-function doesScratchSpaceIndexExist(cb) {
-    var options = {
-        host: program.host,
-        port: program.port,
-        path: '/' + scratchSpaceIndexName,
-        method: 'HEAD'
-    };
 
-    var callback = function(response) {
-        var httpResponseCode = '404';
-        httpResponseCode = response.statusCode;
-        winston.log('verbose' , "Metadata scratch space index exist response code=" + httpResponseCode);
-        if (httpResponseCode == '200') {
-            winston.log('verbose' , "This means metadata scratch space index exists.");
-            cb(true);
-        } else {
-            winston.log('verbose' , "This means metadata scratch space index does not exist. Creating it...");
-            createScratchSpaceIndex(cb);
-        }
-    };
-
-    http.request(options, callback).end();
-}
 
 function createScratchSpaceIndex(cb) {
     const putData = {
