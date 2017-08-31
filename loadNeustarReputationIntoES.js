@@ -1427,8 +1427,6 @@ function updateMetadataIndex(create, newIndex, newMaxBlockSize, oldIndex, oldBlo
             "maxBlockSize" : newMaxBlockSize,
             "currentIndex" : newIndex,
             "version" : "something", //do we need this??
-            "lastUsedIndex" : null,
-            "lastUsedMaxBlockSize" : null
         }
 
         var req = http.request(options, callback);
