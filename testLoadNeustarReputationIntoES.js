@@ -37,6 +37,7 @@ const lastUsedMaxBlockSize = 414;
 const lastUsedIndex = neustarIpPrefix+'9200';
 
 var uploadHttpSwitches, resumeHttpSwitches, deleteOldHttpSwitches, deleteAllHttpSwitches;
+var deleteSingleMetadataHttpSwitches, deleteSingleLastUsedHttpSwitches, deleteSingleUnusedHttpSwitches;
 var switchHttpSwitches, noSwitchHttpSwitches, switchToLastUsedIndexHttpSwitches;
 //maxLimit should be under 1001 since one batch size is capped at 1000
 //if you increase this, then fix Bulk upload test since that breaks
@@ -93,6 +94,9 @@ app.put('/' + metadataIndex + '/', function (req, res) {
     resumeHttpSwitches["createMetadataIndex"] = true;
     deleteOldHttpSwitches["createMetadataIndex"] = true;
     deleteAllHttpSwitches["createMetadataIndex"] = true;
+    deleteSingleUnusedHttpSwitches["createMetadataIndex"] = true;
+    deleteSingleLastUsedHttpSwitches["createMetadataIndex"] = true;
+    deleteSingleMetadataHttpSwitches["createMetadataIndex"] = true;
     switchHttpSwitches["createMetadataIndex"] = true;
     noSwitchHttpSwitches["createMetadataIndex"] = true;
     switchToLastUsedIndexHttpSwitches["createMetadataIndex"] = true;
@@ -189,6 +193,9 @@ app.head('/' + metadataIndex + '/', function (req, res) {
     resumeHttpSwitches['metadataExist'] = true;
     deleteOldHttpSwitches['metadataExist'] = true;
     deleteAllHttpSwitches['metadataExist'] = true;
+    deleteSingleUnusedHttpSwitches["metadataExist"] = true;
+    deleteSingleLastUsedHttpSwitches["metadataExist"] = true;
+    deleteSingleMetadataHttpSwitches["metadataExist"] = true;
     switchHttpSwitches['metadataExist'] = true;
     noSwitchHttpSwitches['metadataExist'] = true;
     switchToLastUsedIndexHttpSwitches['metadataExist'] = true;
@@ -203,6 +210,9 @@ app.head('/' + scratchSpace, function (req, res) {
 
     uploadHttpSwitches["scratchSpaceExist"] = true;
     resumeHttpSwitches["scratchSpaceExist"] = true;
+    deleteSingleUnusedHttpSwitches["scratchSpaceExist"] = true;
+    deleteSingleLastUsedHttpSwitches["scratchSpaceExist"] = true;
+    deleteSingleMetadataHttpSwitches["scratchSpaceExist"] = true;
     deleteAllHttpSwitches["scratchSpaceExist"] = true;
     deleteOldHttpSwitches["scratchSpaceExist"] = true;
     switchHttpSwitches["scratchSpaceExist"] = true;
@@ -229,6 +239,9 @@ app.put('/' + scratchSpace + '/', function (req, res) {
 
     uploadHttpSwitches["createScratchSpaceIndex"] = true;
     resumeHttpSwitches["createScratchSpaceIndex"] = true;
+    deleteSingleUnusedHttpSwitches["createScratchSpaceIndex"] = true;
+    deleteSingleLastUsedHttpSwitches["createScratchSpaceIndex"] = true;
+    deleteSingleMetadataHttpSwitches["createScratchSpaceIndex"] = true;
     deleteAllHttpSwitches["createScratchSpaceIndex"] = true;
     deleteOldHttpSwitches["createScratchSpaceIndex"] = true;
     switchHttpSwitches["createScratchSpaceIndex"] = true;
@@ -422,6 +435,7 @@ app.post('/' + scratchSpace + '/' + metadataTypeName + '/0/_update', function (r
         //deleteOld does not delete Paused Index since it's newer than what's the current index in metadata
         //deleteAll should reach here
         deleteAllHttpSwitches['removePausedIndexFromScratchSpace'] = true;
+        deleteSingleUnusedHttpSwitches["removePausedIndexFromScratchSpace"] = true;
         res.send('Paused index nullified');
     } else if (req.body === JSON.stringify(removeLoadedIndex)) {
         deleteOldHttpSwitches['removeLoadedIndexFromScratchSpace'] = true;
@@ -438,6 +452,9 @@ app.get('/' + scratchSpace + '/' + metadataTypeName + '/0/_source', function (re
 
     uploadHttpSwitches['getScratchSpaceDoc'] = true;
     resumeHttpSwitches['getScratchSpaceDoc'] = true;
+    deleteSingleUnusedHttpSwitches["getScratchSpaceDoc"] = true;
+    deleteSingleLastUsedHttpSwitches["getScratchSpaceDoc"] = true;
+    deleteSingleMetadataHttpSwitches["getScratchSpaceDoc"] = true;
     deleteAllHttpSwitches['getScratchSpaceDoc'] = true;
     deleteOldHttpSwitches['getScratchSpaceDoc'] = true;
     switchHttpSwitches['getScratchSpaceDoc'] = true;
@@ -463,6 +480,9 @@ app.get('/' + scratchSpace + '/' + metadataTypeName + '/0/_source', function (re
 app.get('/' + metadataIndex + '/' + metadataTypeName + '/0/_source', function (req, res) {
     winston.log("verbose", "Got a GET request for metadata index 0th doc");
 
+    deleteSingleUnusedHttpSwitches["getCurrentIndexAndBlockSizeFromMetadata"] = true;
+    deleteSingleLastUsedHttpSwitches["getCurrentIndexAndBlockSizeFromMetadata"] = true;
+    deleteSingleMetadataHttpSwitches["getCurrentIndexAndBlockSizeFromMetadata"] = true;
     deleteOldHttpSwitches['getCurrentIndexAndBlockSizeFromMetadata'] = true;
     deleteAllHttpSwitches['getCurrentIndexAndBlockSizeFromMetadata'] = true;
     switchHttpSwitches['getCurrentIndexAndBlockSizeFromMetadata'] = true;
@@ -485,8 +505,8 @@ app.get('/_cat/indices/' + neustarIpRegExp, function (req, res) {
     deleteAllHttpSwitches['getAllNeustarIndexes'] = true;
 
     const neustarIndexesList = 'index\n' + neustarIpPrefix + '789\n' + neustarIpPrefix + '456\n' +
-        neustarIpPrefix + '123\n' + metadataCurrentIndex + '\n' + scratchSpacePausedIndex + '\n' +
-        scratchSpaceLoadedIndex + '\n';
+        neustarIpPrefix + '123\n' + metadataCurrentIndex + '\n' + lastUsedIndex + '\n' +
+        scratchSpacePausedIndex + '\n' + scratchSpaceLoadedIndex + '\n';
     res.send(neustarIndexesList);
 });
 
@@ -494,14 +514,19 @@ app.get('/_cat/indices/' + neustarIpRegExp, function (req, res) {
 app.delete('/' + neustarIpRegExp + '/', function (req, res) {
     deleteOldHttpSwitches['deleteIndex'] = true;
     deleteAllHttpSwitches['deleteIndex'] = true;
+    deleteSingleUnusedHttpSwitches["deleteIndex"] = true;
 
     //assert that deleteIndex is NOT called on the index in metadata
+    //or the last used index
     var firstSlash = req.url.indexOf('/') + 1;
     var deletedIndexName = req.url.substr(firstSlash, req.url.indexOf('/', firstSlash) - 1);
     //there should have been no request to DELETE the current index in metadata
     if (deletedIndexName == metadataCurrentIndex) {
         throw new Error("A DELETE request for metadata current index came. This is not supposed to happen.");
-        res.status(404).send("Cannot DELETE current ");
+        res.status(404).send("Cannot DELETE metadata current index");
+    } else if (deletedIndexName == lastUsedIndex) {
+        throw new Error("A DELETE request for monolith last used index came. This is not supposed to happen.");
+        res.status(404).send("Cannot DELETE last used index");
     } else {
         winston.log("verbose", "Got a DELETE request for a neustar ip index on ES. Deleted Index=" + deletedIndexName);
         res.status(200).send("Neustar index deleted");
@@ -607,6 +632,36 @@ function resetSwitches() {
         "deleteIndex" : false
     };
 
+    deleteSingleUnusedHttpSwitches = {
+        "metadataExist" : false,
+        "createMetadataIndex" : false,
+        "scratchSpaceExist" : false,
+        "createScratchSpaceIndex" : false,
+        "getCurrentIndexAndBlockSizeFromMetadata" : false,
+        "getScratchSpaceDoc" : false,
+        //since the unused index being deleted in this test is the paused index
+        "removePausedIndexFromScratchSpace" : false,
+        "deleteIndex" : false
+    };
+
+    deleteSingleMetadataHttpSwitches = {
+        "metadataExist" : false,
+        "createMetadataIndex" : false,
+        "scratchSpaceExist" : false,
+        "createScratchSpaceIndex" : false,
+        "getCurrentIndexAndBlockSizeFromMetadata" : false,
+        "getScratchSpaceDoc" : false
+    };
+
+    deleteSingleLastUsedHttpSwitches = {
+        "metadataExist" : false,
+        "createMetadataIndex" : false,
+        "scratchSpaceExist" : false,
+        "createScratchSpaceIndex" : false,
+        "getCurrentIndexAndBlockSizeFromMetadata" : false,
+        "getScratchSpaceDoc" : false
+    };
+
     switchHttpSwitches = {
         "metadataExist" : false,
         "createMetadataIndex" : false,
@@ -652,7 +707,7 @@ var childProcess = require('child_process');
 var exec = require('child_process').exec;
 var output;
 
-function runScript(scriptPath, command, callback) {
+function runScript(scriptPath, command, commandArg, callback) {
     var uploadScriptLogLevel = 'info';
     //give debug level if you want to see verbose logs from the upload script as well
     //give verbose level if you want to see verbose logs only from the test
@@ -662,7 +717,12 @@ function runScript(scriptPath, command, callback) {
         uploadScriptLogLevel = 'debug';
     }
 
-    const spawnedProcess = childProcess.spawn('node', [uploadScript, '--host', esHost, '--port', esPort, command, '--logLevel', uploadScriptLogLevel]);
+    if (commandArg == null) {
+        commandArg = "";
+    }
+
+    const spawnedProcess = childProcess.spawn('node', [uploadScript, '--host', esHost, '--port', esPort,
+        command, commandArg, '--logLevel', uploadScriptLogLevel]);
     if (command === '--upload') {
         exec('sh std_input.sh ' + maxLimit, function (error, stdout, stderr) {
         }).stdout.pipe(spawnedProcess.stdin);
@@ -686,7 +746,7 @@ function testUpload() {
     // Now we can run a script and invoke a callback when complete, e.g.
     winston.log("info", 'Begin running ' + uploadScript + ' with upload command');
     resetSwitches();
-    runScript(uploadScript, '--upload', function (err) {
+    runScript(uploadScript, '--upload', null, function (err) {
         if (err) {
             throw err;
         }
@@ -703,7 +763,7 @@ function testResume() {
     resumeTest = true;
     winston.log("info", 'Begin running ' + uploadScript + ' with upload command - resuming uploading');
     resetSwitches();
-    runScript(uploadScript, '--upload', function (err) {
+    runScript(uploadScript, '--upload', null, function (err) {
         if (err) {
             throw err;
         }
@@ -711,15 +771,60 @@ function testResume() {
         checkAllCallsMade(resumeHttpSwitches);
         resumeTest = false;
         winston.log("info", 'finished running ' + uploadScript + ' with upload command - resuming uploading');
-        testDeleteAll();
+        testDeleteSingleLastUsedIndex();
     });
 
+}
+
+function testDeleteSingleLastUsedIndex() {
+    //no deletion should occur
+    winston.log("info", 'Begin running ' + uploadScript + ' with deleteSingle command and lastUsedIndex as paramter');
+    resetSwitches();
+    runScript(uploadScript, '--deleteSingle', lastUsedIndex, function (err) {
+        if (err) {
+            throw err;
+        }
+
+        checkAllCallsMade(deleteSingleLastUsedHttpSwitches);
+        winston.log("info", 'finished running ' + uploadScript + ' with deleteSingle command and lastUsedIndex as paramter');
+        testDeleteSingleMetadataIndex();
+    });
+}
+
+function testDeleteSingleMetadataIndex() {
+    //no deletion should occur
+    winston.log("info", 'Begin running ' + uploadScript + ' with deleteSingle command and metadataIndex as paramter');
+    resetSwitches();
+    runScript(uploadScript, '--deleteSingle', metadataCurrentIndex, function (err) {
+        if (err) {
+            throw err;
+        }
+
+        checkAllCallsMade(deleteSingleMetadataHttpSwitches);
+        winston.log("info", 'finished running ' + uploadScript + ' with deleteSingle command and metadataIndex as paramter');
+        testDeleteSingleUnusedIndex();
+    });
+}
+
+function testDeleteSingleUnusedIndex() {
+    //unused index should be deleted
+    winston.log("info", 'Begin running ' + uploadScript + ' with deleteSingle command and an unused index as paramter');
+    resetSwitches();
+    runScript(uploadScript, '--deleteSingle', scratchSpacePausedIndex, function (err) {
+        if (err) {
+            throw err;
+        }
+
+        checkAllCallsMade(deleteSingleUnusedHttpSwitches);
+        winston.log("info", 'finished running ' + uploadScript + ' with deleteSingle command and an unused index as paramter');
+        testDeleteAll();
+    });
 }
 
 function testDeleteAll() {
     winston.log("info", 'Begin running ' + uploadScript + ' with deleteAll command');
     resetSwitches();
-    runScript(uploadScript, '--deleteAll', function (err) {
+    runScript(uploadScript, '--deleteAll', null, function (err) {
         if (err) {
             throw err;
         }
@@ -733,7 +838,7 @@ function testDeleteAll() {
 function testDeleteOld() {
     winston.log("info", 'Begin running ' + uploadScript + ' with deleteOld command');
     resetSwitches();
-    runScript(uploadScript, '--deleteOld', function (err) {
+    runScript(uploadScript, '--deleteOld', null, function (err) {
         if (err) {
             throw err;
         }
@@ -748,7 +853,7 @@ function testNoSwitch() {
     winston.log("info", 'Begin running ' + uploadScript + ' with switch command and no switching');
     resetSwitches();
     noSwitchTest = true;
-    runScript(uploadScript, '--switch', function (err) {
+    runScript(uploadScript, '--switch', null, function (err) {
         if (err) {
             throw err;
         }
@@ -769,7 +874,7 @@ function testSwitch() {
     resetSwitches();
     switchTest = true;
 
-    runScript(uploadScript, '--switch', function (err) {
+    runScript(uploadScript, '--switch', null, function (err) {
         if (err) {
             throw err;
         }
@@ -777,22 +882,22 @@ function testSwitch() {
         winston.log("info", 'finished running ' + uploadScript + ' with switch command and switching');
         scratchSpaceLoadedIndex = tempIndex;
         switchTest = false;
-        testSwitchToLastIndex();
+        testSwitchToLastUsedIndex();
     });
 }
 
-function testSwitchToLastIndex() {
-    //this tests a switchToLastIndex
-    winston.log("info", 'Begin running ' + uploadScript + ' with switchToLastIndex command');
+function testSwitchToLastUsedIndex() {
+    //this tests a switchToLastUsedIndex
+    winston.log("info", 'Begin running ' + uploadScript + ' with switchToLastUsedIndex command');
     resetSwitches();
     switchToLastUsedIndexTest = true;
 
-    runScript(uploadScript, '--switchToLastIndex', function (err) {
+    runScript(uploadScript, '--switchToLastUsedIndex', null, function (err) {
         if (err) {
             throw err;
         }
         checkAllCallsMade(switchToLastUsedIndexHttpSwitches);
-        winston.log("info", 'finished running ' + uploadScript + ' with switchToLastIndex command');
+        winston.log("info", 'finished running ' + uploadScript + ' with switchToLastUsedIndex command');
         switchToLastUsedIndexTest = false;
         //close server after this last test
         server.listen(httpPort, function () {

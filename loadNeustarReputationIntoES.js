@@ -12,10 +12,13 @@
  Options:
  Upload - uploads csv file to a new index (if there was not already an index that had a paused upload).
  If there was a paused index, then uploading continues on that until it is complete
- DeleteAll - Delete all indexes that are not used by the monolith (got from neustar.metadata)
+ DeleteAll - Delete all indexes as long as they are not used by the monolith (got from neustar.metadata)
+             or was the last used index by monolith (got from scratch space)
  DeleteOld - Delete all indexes that are older than what the monolith is using (got from neustar.metadata)
+             except the last used index by monolith (got from scratch space)
+ DeleteSingle - Deletes a single index that is given as paramter (as long as it is not what monolith is using or the last used index by monolith)
  Switch - Switch the index being used by the monolith to the latest fully loaded index (this is updating neustar.metadata)
- SwitchToLastIndex - Switch the index being used by the monolith to the last index that the monolith used
+ switchToLastUsedIndex - Switch the index being used by the monolith to the last index that the monolith used
 
  This script also allows for resuming of uploading docs loading into Neustar index (if it was paused because of a system crash or Ctrl + C)
  Neustar index is of the form neustar.ipinfo.* (where * is the timestamp of when the index was created)
@@ -39,9 +42,10 @@ program
     .option('--port [esPort]', 'elasticSearch port')
     .option('--deleteAll', 'delete all indexes except monolith one')
     .option('--deleteOld', 'delete indexes older that whats used by monolith')
+    .option('--deleteSingle [indexToDelete]', 'delete single index')
     .option('--upload', 'upload csv file')
     .option('--switch', 'start using new index for ip reputation')
-    .option('--switchToLastIndex', 'start using new index for ip reputation')
+    .option('--switchToLastUsedIndex', 'start using new index for ip reputation')
     .option('--logLevel [winstonLogLevel]', 'log level for console logging')
     .parse(process.argv);
 
@@ -80,23 +84,32 @@ function setLogLevel() {
 }
 
 function optionCheck() {
-    if (program.host == null || program.port == null) {
+    if (program.host == null || program.port == null || program.host == true || program.port == true) {
+        //if the host or port options were not there or if they were not provided with parameters
         throw new Error("Elasticsearch host and port not set");
     } else {
-        winston.log('verbose', "ElasticSearch host=" + program.host + " and port=" + program.port);
+        winston.log('verbose', "ElasticSearch host = " + program.host + " and port = " + program.port);
     }
-    if (program.deleteAll == null && program.deleteOld == null && program.upload == null && program.switch == null && program.switchToLastIndex == null) {
-        throw new Error("No option selected. Use --delete to clear old indexes, --upload to upload csv file " +
-            "or --switch to enable the new index");
-    } else if (program.deleteOld != null && program.deleteAll == null && program.upload == null && program.switch == null && program.switchToLastIndex == null) {
+    if (program.deleteAll == null && program.deleteOld == null && program.deleteSingle == null &&
+        program.upload == null && program.switch == null && program.switchToLastUsedIndex == null) {
+        throw new Error("No option selected. Use --delete to clear old indexes, --upload to upload csv file or --switch to enable the new index");
+    } else if (program.deleteOld != null && program.deleteAll == null && program.deleteSingle == null &&
+        program.upload == null && program.switch == null && program.switchToLastUsedIndex == null) {
         winston.log('verbose', "Delete old indexes option selected. Program will now delete old unused elasticsearch indexes for Neustar IP reputation.");
-    } else if (program.deleteOld == null && program.deleteAll != null && program.upload == null && program.switch == null && program.switchToLastIndex == null) {
+    } else if (program.deleteOld == null && program.deleteAll != null && program.deleteSingle == null &&
+        program.upload == null && program.switch == null && program.switchToLastUsedIndex == null) {
         winston.log('verbose', "Delete all indexes option selected. Program will now delete all unused elasticsearch indexes for Neustar IP reputation.");
-    } else if (program.deleteOld == null && program.deleteAll == null && program.upload != null && program.switch == null && program.switchToLastIndex == null) {
+    } else if (program.deleteOld == null && program.deleteAll == null && program.deleteSingle != null &&
+        program.upload == null && program.switch == null && program.switchToLastUsedIndex == null) {
+        winston.log('verbose', "Delete single index option selected. Program will now delete elasticsearch index specified.");
+    } else if (program.deleteOld == null && program.deleteAll == null && program.deleteSingle == null &&
+        program.upload != null && program.switch == null && program.switchToLastUsedIndex == null) {
         winston.log('verbose', "Upload option selected. Program will upload Neustar IP reputation to a new index.");
-    } else if (program.deleteOld == null && program.deleteAll == null && program.upload == null && program.switch != null && program.switchToLastIndex == null) {
+    } else if (program.deleteOld == null && program.deleteAll == null && program.deleteSingle == null &&
+        program.upload == null && program.switch != null && program.switchToLastUsedIndex == null) {
         winston.log('verbose', "Switch option selected. Program will switch current index in metadata index to use latest Neustar IP reputation index.");
-    } else if (program.deleteOld == null && program.deleteAll == null && program.upload == null && program.switch == null && program.switchToLastIndex != null) {
+    } else if (program.deleteOld == null && program.deleteAll == null && program.deleteSingle == null &&
+        program.upload == null && program.switch == null && program.switchToLastUsedIndex != null) {
         winston.log('verbose', "Switch option to Last Index selected. Program will switch current index in metadata index to use last used index from metadata.");
     } else {
         throw new Error("More than one option among delete, upload, switch not allowed.");
@@ -233,16 +246,18 @@ function doOperationBasedOnOption() {
     } else if (program.deleteAll != null) {
         //clear all indexes
         deleteUnusedIndexes(true);
+    } else if (program.deleteSingle != null) {
+        deleteSingleIndex();
     } else if (program.upload != null) {
         uploadCsv();
-    } else if (program.switch != null || program.switchToLastIndex != null) {
+    } else if (program.switch != null || program.switchToLastUsedIndex != null) {
         switchIndex();
     } else {
         throw new Error("doOperationBasedOnOption failed. Aborting...");
     }
 }
 
-function deleteIndex(indexToBeDeleted) {
+function deleteIndex(indexToBeDeleted, cb) {
     var options = {
         host: program.host,
         port: program.port,
@@ -263,8 +278,10 @@ function deleteIndex(indexToBeDeleted) {
             if (indexDeleted != '200') {
                 winston.log('warn' , indexToBeDeleted + "failed to be deleted with response code = " + indexDeleted);
                 winston.log('warn' , "Index deletion error is " + str);
+                cb(false, indexToBeDeleted);
             } else {
                 winston.log('info' , "Unused index " + indexToBeDeleted + " deleted");
+                cb(true, indexToBeDeleted);
             }
         });
     }
@@ -303,22 +320,27 @@ function deleteUnusedIndexes(deleteAll) {
                         var somethingDeleted = false;
                         for (i = 0; i < arrayOfIndexes.length; i++) {
                             if (arrayOfIndexes[i] != currentMonolithIndex) {
-                                somethingDeleted = true;
-                                deleteIndex(arrayOfIndexes[i]);
-                                if (arrayOfIndexes[i] === loadedIndex) {
-                                    removeLoadedIndexFromScratchSpace();
-                                }
-                                if (arrayOfIndexes[i] === pausedIndex) {
-                                    removePausedIndexFromScratchSpace();
-                                }
                                 if (arrayOfIndexes[i] === lastUsedIndex) {
-                                    removeLastUsedIndexFromScratchSpace();
+                                    winston.log('verbose', "Last used index " + lastUsedIndex + " must not be deleted.");
+                                    continue;
                                 }
+                                somethingDeleted = true;
+                                deleteIndex(arrayOfIndexes[i], function (deleteSuccess, indexDeleted) {
+                                    if (deleteSuccess) {
+                                        if (indexDeleted === loadedIndex) {
+                                            removeLoadedIndexFromScratchSpace();
+                                        }
+                                        if (indexDeleted === pausedIndex) {
+                                            removePausedIndexFromScratchSpace();
+                                        }
+                                    }
+                                });
                             } else {
                                 if (deleteAll) {
                                     //delete indexes newer than what's used by monolith
                                     //hence continue
                                     //otherwise break out of for loop
+                                    //FYI: arrayOfIndexes is already sorted according to timestamp inside getAllNeustarIndexes()
                                     continue;
                                 } else {
                                     break;
@@ -330,6 +352,59 @@ function deleteUnusedIndexes(deleteAll) {
                         }
                     });
                 })
+            });
+        } else {
+            throw new Error("Scratch space creation failed");
+        }
+    });
+}
+
+function deleteSingleIndex() {
+    if (program.deleteSingle == true) {
+        winston.log('info', "No index specified to delete");
+        return;
+    }
+
+    doesScratchSpaceIndexExist(function (success) {
+        if (success === true) {
+            getCurrentIndexAndBlockSizeFromMetadata(function(currentMonolithIndex, currentMaxBlockSize) {
+                getScratchSpaceInfo(function (scratchSpaceInfo) {
+                    var loadedIndex = null;
+                    var pausedIndex = null;
+                    var lastUsedIndex = null;
+                    if (scratchSpaceInfo != null) {
+                        loadedIndex = scratchSpaceInfo.loadedIndex;
+                        pausedIndex = scratchSpaceInfo.pausedIndex;
+                        lastUsedIndex = scratchSpaceInfo.lastUsedIndex;
+                        if (loadedIndex != null) {
+                            loadedIndex = loadedIndex.trim();
+                        }
+                        if (pausedIndex != null) {
+                            pausedIndex = pausedIndex.trim();
+                        }
+                        if (lastUsedIndex != null) {
+                            lastUsedIndex = lastUsedIndex.trim();
+                        }
+                    }
+
+                    if (program.deleteSingle == currentMonolithIndex) {
+                        winston.log('warn', "Failed to delete " + program.deleteSingle + " since it's currently being used by monolith.");
+                    } else if (program.deleteSingle == lastUsedIndex) {
+                        winston.log('warn', "Failed to delete " + program.deleteSingle + " since it was the last used index by monolith.");
+                    } else {
+                        winston.log('verbose', "About to delete " + program.deleteSingle);
+                        deleteIndex(program.deleteSingle, function (deleteSuccess, indexDeleted) {
+                            if (deleteSuccess) {
+                                if (indexDeleted === loadedIndex) {
+                                    removeLoadedIndexFromScratchSpace();
+                                }
+                                if (indexDeleted === pausedIndex) {
+                                    removePausedIndexFromScratchSpace();
+                                }
+                            }
+                        });
+                    }
+                });
             });
         } else {
             throw new Error("Scratch space creation failed");
@@ -525,7 +600,7 @@ function updateMetadataCurrentIndex() {
         }
 
         var indexToSwitchTo, switchMaxBlockSize;
-        if(program.switchToLastIndex != null) {
+        if(program.switchToLastUsedIndex != null) {
             indexToSwitchTo = scratchSpaceInfo.lastUsedIndex;
             switchMaxBlockSize = scratchSpaceInfo.lastUsedMaxBlockSize;
             if (indexToSwitchTo == null) {
@@ -560,7 +635,7 @@ function updateMetadataCurrentIndex() {
                         //create a doc
                         updateMetadataIndex(true, indexToSwitchTo, switchMaxBlockSize);
                     } else {
-                        if (program.switchToLastIndex != null && indexToSwitchTo != currentMonolithIndex) {
+                        if (program.switchToLastUsedIndex != null && indexToSwitchTo != currentMonolithIndex) {
                             //we are switching to last Used Index
                             //so it could be older than what is used by monolith, and we should allow that
                             updateMetadataIndex(false, indexToSwitchTo, switchMaxBlockSize);
@@ -769,7 +844,7 @@ function getCurrentIndexAndBlockSizeFromMetadata(cb) {
                 cb(null, null);
             }
             currentIpReputationIndex = currentIpReputationIndex.trim();
-            winston.log('info' , "Current index from metadata is " + currentIpReputationIndex + " and maxBlckSize is " + maxBlockSizeOfCurrentIndex);
+            winston.log('info' , "Current index from metadata is " + currentIpReputationIndex + " and maxBlockSize is " + maxBlockSizeOfCurrentIndex);
             cb(currentIpReputationIndex, maxBlockSizeOfCurrentIndex);
         });
     }
@@ -1303,10 +1378,6 @@ function updateScratchSpaceWithLastUsedIndex(lastUsedIndex, lastUsedMaxBlockSize
     req.write(JSON.stringify(postData));
     req.end();
 
-}
-
-function removeLastUsedIndexFromScratchSpace() {
-    removeInfoFromScratchSpace("lastUsed");
 }
 
 function removePausedIndexFromScratchSpace() {
